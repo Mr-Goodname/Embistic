@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
@@ -60,9 +61,15 @@ internal static class Program
                 scroller.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
                 await Task.Delay(300);
                 Check(!view.IsFollowingPlayback, "Mouse wheel suspends automatic following");
+                // The runner can process the final WPF animation frame later than its
+                // nominal duration. Snapshot the settled manual position, not a frame
+                // still moving towards the wheel target.
+                await WaitUntilAsync(() => Math.Abs(view.CurrentScrollOffset - view.TargetScrollOffset) < 2,
+                    "Mouse wheel scrolling did not reach its destination");
                 var manualOffset = view.CurrentScrollOffset;
                 await Task.Delay(5250);
-                Check(!view.IsFollowingPlayback && Math.Abs(view.CurrentScrollOffset - manualOffset) < 2, "Paused playback preserves manual reading position after five seconds");
+                Check(!view.IsFollowingPlayback && Math.Abs(view.CurrentScrollOffset - manualOffset) < 2,
+                    $"Paused playback preserves manual reading position after five seconds (following={view.IsFollowingPlayback}, expected={manualOffset:F2}, actual={view.CurrentScrollOffset:F2})");
                 view.UpdatePosition(10500);
                 await Task.Delay(620);
                 Check(view.IsFollowingPlayback && Math.Abs(view.CurrentScrollOffset - view.TargetScrollOffset) < 2, "Playback motion restores following after the manual hold");
@@ -110,5 +117,15 @@ internal static class Program
         if (!condition) throw new InvalidOperationException("FAIL: " + message);
         _passed++;
         Console.WriteLine("PASS: " + message);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, string failure)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (!condition())
+        {
+            if (deadline.Elapsed > TimeSpan.FromSeconds(3)) throw new InvalidOperationException("FAIL: " + failure);
+            await Task.Delay(20);
+        }
     }
 }

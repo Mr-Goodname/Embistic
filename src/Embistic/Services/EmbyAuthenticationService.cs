@@ -1,7 +1,6 @@
 using System.Net;
 using System.IO;
 using System.Net.Http;
-using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -36,15 +35,18 @@ public static class EmbyAuthenticationService
             Timeout = TimeSpan.FromSeconds(20)
         };
         client.DefaultRequestHeaders.TryAddWithoutValidation("X-Emby-Authorization",
-            $"MediaBrowser Client=\"Embistic\", Device=\"Windows\", DeviceId=\"{DeviceId}\", Version=\"0.3.1\"");
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Embistic/0.3.1");
+            $"MediaBrowser Client=\"Embistic\", Device=\"Windows\", DeviceId=\"{DeviceId}\", Version=\"0.3.2\"");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Embistic/0.3.2");
 
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, "Users/AuthenticateByName")
             {
                 // Keep the password exact, including spaces; empty passwords are valid on passwordless Emby accounts.
-                Content = JsonContent.Create(new { Username = username.Trim(), Pw = password ?? "" }, options: CredentialsJson)
+                // Some Emby servers reject chunked authentication requests. Buffer this
+                // small JSON body so HttpClient sends an explicit Content-Length.
+                Content = new StringContent(JsonSerializer.Serialize(new { Username = username.Trim(), Pw = password ?? "" }, CredentialsJson),
+                    Encoding.UTF8, "application/json")
             };
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (!response.IsSuccessStatusCode)

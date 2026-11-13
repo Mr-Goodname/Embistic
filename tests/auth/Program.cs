@@ -6,6 +6,25 @@ using System.Text.Json;
 using Embistic.Models;
 using Embistic.Services;
 
+if (args.Contains("--live"))
+{
+    var liveServer = Environment.GetEnvironmentVariable("EMBISTIC_AUTH_SERVER") ?? "";
+    var liveUsername = Environment.GetEnvironmentVariable("EMBISTIC_AUTH_USERNAME") ?? "";
+    var livePassword = Environment.GetEnvironmentVariable("EMBISTIC_AUTH_PASSWORD") ?? "";
+    try
+    {
+        var result = await EmbyAuthenticationService.AuthenticateAsync(liveServer, liveUsername, livePassword);
+        Console.WriteLine("PASS: Real Emby account login returns a user and access token.");
+        if (result.AccessToken.Length == 0 || result.UserId.Length == 0) throw new InvalidOperationException("Missing login result.");
+    }
+    catch (EmbyAuthenticationException exception)
+    {
+        Console.WriteLine("FAIL: Real account login: " + exception.Message + " HTTP " + exception.StatusCode);
+        Environment.ExitCode = 1;
+    }
+    return;
+}
+
 var checks = 0;
 void Check(bool condition, string description)
 {
@@ -31,6 +50,8 @@ async Task<EmbyLoginResult> WithResponse(int statusCode, string response, string
         var request = context.Request;
         Check(request.HttpMethod == "POST" && request.Url?.AbsolutePath == "/Users/AuthenticateByName", "Standard Emby account login endpoint");
         Check(request.Headers["X-Emby-Token"] is null && request.Url?.Query == "", "No credential in URL or token header");
+        Check(request.ContentLength64 > 0 && request.Headers["Transfer-Encoding"] is null,
+            "Login JSON has an explicit length for Emby servers that reject chunked requests");
         var expectedId = "embistic-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Environment.MachineName + "|" + Environment.UserName)))[..24].ToLowerInvariant();
         var auth = request.Headers["X-Emby-Authorization"] ?? "";
         var agentVersion = request.UserAgent?.Split('/').LastOrDefault();
