@@ -1,4 +1,4 @@
-param([string]$Version = '0.4.1',[string]$IsccPath)
+param([string]$Version = '0.4.2',[string]$IsccPath)
 $ErrorActionPreference='Stop'
 $projectRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'){throw 'Invalid installer version'}

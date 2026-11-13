@@ -35,8 +35,8 @@ public static class EmbyAuthenticationService
             Timeout = TimeSpan.FromSeconds(20)
         };
         client.DefaultRequestHeaders.TryAddWithoutValidation("X-Emby-Authorization",
-            $"MediaBrowser Client=\"Embistic\", Device=\"Windows\", DeviceId=\"{DeviceId}\", Version=\"0.4.1\"");
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Embistic/0.4.1");
+            $"MediaBrowser Client=\"Embistic\", Device=\"Windows\", DeviceId=\"{DeviceId}\", Version=\"0.4.2\"");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Embistic/0.4.2");
 
         try
         {
