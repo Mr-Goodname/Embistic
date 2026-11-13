@@ -38,8 +38,8 @@ public sealed partial class EmbyClient : IDisposable
         _baseUrl = uri.AbsoluteUri.TrimEnd('/');
         _http = new HttpClient(new SocketsHttpHandler { AutomaticDecompression = DecompressionMethods.All, PooledConnectionLifetime = TimeSpan.FromMinutes(5) }) { BaseAddress = uri, Timeout = TimeSpan.FromSeconds(25) };
         _http.DefaultRequestHeaders.TryAddWithoutValidation("X-Emby-Token", _settings.ApiKey);
-        _http.DefaultRequestHeaders.TryAddWithoutValidation("X-Emby-Authorization", $"MediaBrowser Client=\"Embistic\", Device=\"Windows\", DeviceId=\"{DeviceId}\", Version=\"0.4.0\"");
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Embistic/0.4.0");
+        _http.DefaultRequestHeaders.TryAddWithoutValidation("X-Emby-Authorization", $"MediaBrowser Client=\"Embistic\", Device=\"Windows\", DeviceId=\"{DeviceId}\", Version=\"0.4.1\"");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Embistic/0.4.1");
     }
 
     public async Task<IReadOnlyList<EmbyUser>> GetUsersAsync(CancellationToken cancellationToken = default)

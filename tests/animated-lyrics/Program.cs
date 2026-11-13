@@ -44,6 +44,7 @@ internal static class Program
                 var rows = (StackPanel)view.FindName("RowsPanel");
                 Check(rows.Children.Count == 24 && ((Button)rows.Children[2]).ActualHeight > ((Button)rows.Children[0]).ActualHeight, "Rows keep natural multi-line translation heights");
                 var before = view.CurrentScrollOffset;
+                var scrollClock = Stopwatch.StartNew();
                 view.UpdatePosition(10000);
                 var target = view.TargetScrollOffset;
                 Check(view.ActiveLineIndex == 2 && target > before + 100, "New active line targets its measured center");
@@ -53,8 +54,24 @@ internal static class Program
                 var focusedContent = (StackPanel)((Button)rows.Children[2]).Content;
                 var focusedMain = (OutlinedLyricsText)focusedContent.Children[0];
                 Check(focusedMain.Opacity > .72 && focusedMain.Opacity < 1, "Active lyric opacity transitions through intermediate values");
+                window.Height += 10;
+                window.UpdateLayout();
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                Check(Math.Abs(view.TargetScrollOffset - target) < 1 && view.CurrentScrollOffset < target - 1,
+                    $"Late height layout preserves the active scroll instead of snapping (current={view.CurrentScrollOffset:F1}, target={target:F1})");
+                await Task.Delay(400);
+                var beforeWidthLayout = view.CurrentScrollOffset;
+                window.Width = 540;
+                window.UpdateLayout();
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                var reflowTarget = view.TargetScrollOffset;
+                Check(Math.Abs(reflowTarget - target) > 1 && view.CurrentScrollOffset < reflowTarget - 1 && view.CurrentScrollOffset >= beforeWidthLayout - 2,
+                    $"Late width layout retargets the wrapped line while retaining an intermediate scroll position (before={beforeWidthLayout:F1}, current={view.CurrentScrollOffset:F1}, oldTarget={target:F1}, target={reflowTarget:F1})");
+                target = reflowTarget;
                 view.UpdatePosition(10300);
-                await WaitUntilAsync(() => Math.Abs(view.CurrentScrollOffset - target) < 2, "Repeated ticks did not reach the original scroll destination");
+                await WaitUntilAsync(() => Math.Abs(view.CurrentScrollOffset - target) < .1, "Repeated ticks did not reach the retargeted scroll destination");
+                Check(scrollClock.Elapsed.TotalMilliseconds < 1400,
+                    $"Layout retargeting retains the original 1200ms animation deadline (elapsed={scrollClock.Elapsed.TotalMilliseconds:F0}ms)");
                 await Task.Delay(50);
                 Check(Math.Abs(view.CurrentScrollOffset - target) < 2, "Repeated ticks on one lyric do not restart scrolling");
                 var focusedScale = (ScaleTransform)((TransformGroup)focusedContent.RenderTransform).Children[0];
@@ -64,6 +81,14 @@ internal static class Program
                 var neighborScale = (ScaleTransform)((TransformGroup)neighbor.RenderTransform).Children[0];
                 var distantScale = (ScaleTransform)((TransformGroup)distant.RenderTransform).Children[0];
                 Check(neighborScale.ScaleX < focusedScale.ScaleX && distantScale.ScaleX < neighborScale.ScaleX, "Neighboring lyrics shrink progressively with distance from the playing line");
+                var pendingRow = (Button)rows.Children[3];
+                pendingRow.InvalidateArrange();
+                Check(!pendingRow.IsArrangeValid, "The deferred-center fixture begins before the target row is arranged");
+                view.UpdatePosition(15000);
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                Check(view.ActiveLineIndex == 3 && view.CurrentScrollOffset < view.TargetScrollOffset - 1,
+                    "A playback transition requested before row layout keeps its animation intent");
+                await WaitUntilAsync(() => Math.Abs(view.CurrentScrollOffset - view.TargetScrollOffset) < .1, "Deferred playback transition did not reach its measured destination");
                 var scroller = (ScrollViewer)view.FindName("Scroller");
                 scroller.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
                 await Task.Delay(300);

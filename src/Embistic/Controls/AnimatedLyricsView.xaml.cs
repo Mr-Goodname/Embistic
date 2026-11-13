@@ -29,7 +29,7 @@ public partial class AnimatedLyricsView : UserControl
     private Color _translationColor = Color.FromRgb(0xC2, 0xCD, 0xDF);
     private int _activeIndex = -1, _scrollVersion, _lastActivationIndex = -1;
     private long _positionMs, _lastMotionAt, _manualInputAt, _lastActivationAt;
-    private bool _hasPosition, _manualScrolling, _layoutScheduled;
+    private bool _hasPosition, _manualScrolling, _layoutScheduled, _animateAfterLayout;
     private double _offsetMs, _targetScrollOffset;
     private readonly LyricPlaybackClock _clock = new();
     private bool _renderAttached, _scrollMoving;
@@ -233,41 +233,63 @@ public partial class AnimatedLyricsView : UserControl
         return LyricScrollMath.IsInViewport(RowTop(row), row.Button.ActualHeight, Scroller.VerticalOffset, Scroller.ViewportHeight);
     }
 
-    private void ScheduleLayoutFollow()
+    private void ScheduleLayoutFollow(bool animate = false)
     {
-        if (_layoutScheduled || !IsLoaded || !IsVisible) return;
+        if (!IsLoaded || !IsVisible) return;
+        _animateAfterLayout |= animate;
+        if (_layoutScheduled) return;
         _layoutScheduled = true;
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
         {
-            _layoutScheduled = false;
-            if (!IsLoaded || !IsVisible) return;
-            var viewport = Math.Max(0, Scroller.ViewportHeight);
-            TopSpace.Height = BottomSpace.Height = _rows.Count > 0 ? viewport * .5 : 0;
-            // Leave room for the render-only scale without clipping wrapped text at either edge.
-            var side = Math.Max(20, ActualWidth * Math.Max(0, _appearance.MainFocusScale - 1) * .5 + 16);
-            RowsPanel.Margin = new Thickness(side, 0, side, 0);
-            Scroller.UpdateLayout();
-            if (!_manualScrolling) CenterActiveLine(false);
+            try
+            {
+                if (!IsLoaded || !IsVisible) return;
+                var viewport = Math.Max(0, Scroller.ViewportHeight);
+                TopSpace.Height = BottomSpace.Height = _rows.Count > 0 ? viewport * .5 : 0;
+                // Leave room for the render-only scale without clipping wrapped text at either edge.
+                var side = Math.Max(20, ActualWidth * Math.Max(0, _appearance.MainFocusScale - 1) * .5 + 16);
+                RowsPanel.Margin = new Thickness(side, 0, side, 0);
+                // Keep the guard until layout is finished: extent/viewport notifications here are
+                // already included in the measurements below and must not enqueue a second snap.
+                Scroller.UpdateLayout();
+                if (!_manualScrolling) CenterActiveLine(_animateAfterLayout, preserveMotion: true);
+            }
+            finally { _layoutScheduled = false; _animateAfterLayout = false; }
         });
     }
 
-    private void CenterActiveLine(bool animate) => CenterLine(_activeIndex < 0 ? 0 : _activeIndex, animate);
+    private void CenterActiveLine(bool animate, bool preserveMotion = false) => CenterLine(_activeIndex < 0 ? 0 : _activeIndex, animate, preserveMotion);
 
-    private void CenterLine(int index, bool animate)
+    private void CenterLine(int index, bool animate, bool preserveMotion = false)
     {
         if (!IsVisible || index < 0 || index >= _rows.Count || Scroller.ViewportHeight <= 0) return;
         var row = _rows[index];
-        if (!row.Button.IsArrangeValid) { ScheduleLayoutFollow(); return; }
+        if (!row.Button.IsArrangeValid) { ScheduleLayoutFollow(animate); return; }
         var target = LyricScrollMath.CenterOffset(RowTop(row), row.Button.ActualHeight, Scroller.ViewportHeight, Scroller.ExtentHeight);
-        ScrollTo(target, animate);
+        ScrollTo(target, animate, preserveMotion: preserveMotion);
     }
 
     private double RowTop(LineVisual row) => row.Button.TranslatePoint(new Point(), LineHost).Y;
 
-    private void ScrollTo(double target, bool animate, double? durationMs = null)
+    private void ScrollTo(double target, bool animate, double? durationMs = null, bool preserveMotion = false)
     {
         target = Math.Clamp(double.IsFinite(target) ? target : 0, 0, Math.Max(0, Scroller.ScrollableHeight));
         var current = Scroller.VerticalOffset;
+        if (preserveMotion && _scrollMoving && _appearance.AnimationsEnabled && IsVisible)
+        {
+            // A late remeasure may change the destination, but it cannot discard the motion.
+            // An unchanged destination keeps the original easing clock entirely intact.
+            if (Math.Abs(target - _targetScrollOffset) < .5) { _targetScrollOffset = target; return; }
+            var remaining = _scrollDuration - Stopwatch.GetElapsedTime(_scrollStarted).TotalMilliseconds;
+            if (remaining > 0 && Math.Abs(target - current) >= .5)
+            {
+                _scrollFrom = current;
+                _targetScrollOffset = target;
+                _scrollDuration = remaining;
+                _scrollStarted = Stopwatch.GetTimestamp();
+                return;
+            }
+        }
         StopScroll();
         _targetScrollOffset = target;
         if (!animate || !_appearance.AnimationsEnabled || !IsVisible || Math.Abs(target - current) < .5)
@@ -369,6 +391,7 @@ public partial class AnimatedLyricsView : UserControl
 
     private void StopMotion()
     {
+        _animateAfterLayout = false;
         _followTimer.Stop();
         StopScroll();
         for (var index = 0; index < _rows.Count; index++) ApplyFocus(_rows[index], index == _activeIndex, false);

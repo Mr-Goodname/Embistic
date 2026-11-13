@@ -10,7 +10,7 @@
     <RootNamespace>Embistic</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\embistic.ico</ApplicationIcon>
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="LibVLCSharp" Version="3.9.6" />

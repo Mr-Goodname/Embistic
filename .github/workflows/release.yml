@@ -39,6 +39,9 @@ jobs:
       - name: Verify music services and native UI
         shell: pwsh
         run: |
+          $uiSession=[Diagnostics.Process]::GetCurrentProcess().SessionId
+          $explorerCount=@(Get-Process explorer -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq $uiSession}).Count
+          Write-Output ("Windows UI test session="+$uiSession+", Explorer processes="+$explorerCount)
           & ./tools/test.ps1 -IncludeMedia
           if($LASTEXITCODE -ne 0){throw 'Release verification failed.'}
 

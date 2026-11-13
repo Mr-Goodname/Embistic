@@ -22,7 +22,7 @@ public sealed class UpdateService : IDisposable
         {
             var assembly = typeof(UpdateService).Assembly;
             var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-            return SemanticVersion.TryParse(version, out var parsed) ? parsed.Display : assembly.GetName().Version?.ToString(3) ?? "0.4.0";
+            return SemanticVersion.TryParse(version, out var parsed) ? parsed.Display : assembly.GetName().Version?.ToString(3) ?? "0.4.1";
         }
     }
 
