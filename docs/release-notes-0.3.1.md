@@ -1,4 +1,4 @@
-# Embistic 0.3.0
+# Embistic 0.3.1
 
 Windows Emby 音乐客户端，支持本机播放、DLNA 投放、沉浸歌词和桌面歌词。
 
@@ -9,7 +9,7 @@ Windows Emby 音乐客户端，支持本机播放、DLNA 投放、沉浸歌词�
 - 增加文件夹与音乐分类浏览、最近和最常播放的歌曲及专辑、Emby 播放列表、歌曲下载与网络电台。
 - 支持界面设置备份和 GitHub 更新检查。
 
-安装版运行 `Embistic-0.3.0-setup.exe`；免安装版解压 `Embistic-win-x64.zip` 后打开 `Embistic.exe`，保留整个文件夹。两者均包含运行时。首次运行请在设置中连接自己的 Emby 服务器。
+安装版运行 `Embistic-0.3.1-setup.exe`；免安装版解压 `Embistic-win-x64.zip` 后打开 `Embistic.exe`，保留整个文件夹。两者均包含运行时。首次运行请在设置中连接自己的 Emby 服务器。
 
 本机使用 Windows 共享音频输出。频谱采集所选输出设备的混合音频，DLNA 时不显示远端频谱；音箱格式支持取决于设备，暂不自动转码。网络歌词来自 LRCLIB 和网易云公开接口，也可导入 LRC。
 

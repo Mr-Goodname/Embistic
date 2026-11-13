@@ -88,7 +88,7 @@ powershell -ExecutionPolicy Bypass -File tools/package.ps1
 免安装包生成在 `dist` 目录。安装包使用本机已安装的 Inno Setup 编译器：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/build-installer-local.ps1 -Version 0.3.0
+powershell -ExecutionPolicy Bypass -File tools/build-installer-local.ps1 -Version 0.3.1
 ```
 
 该脚本不会下载或安装编译器。仓库的 Release 工作流也可在 `vX.Y.Z` 标签上构建 Windows 安装版、免安装版和 SHA-256 校验文件。

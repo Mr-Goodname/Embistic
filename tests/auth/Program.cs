@@ -33,7 +33,9 @@ async Task<EmbyLoginResult> WithResponse(int statusCode, string response, string
         Check(request.Headers["X-Emby-Token"] is null && request.Url?.Query == "", "No credential in URL or token header");
         var expectedId = "embistic-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Environment.MachineName + "|" + Environment.UserName)))[..24].ToLowerInvariant();
         var auth = request.Headers["X-Emby-Authorization"] ?? "";
-        Check(auth.Contains("Client=\"Embistic\"") && auth.Contains($"DeviceId=\"{expectedId}\"") && auth.Contains("Version=\"0.2.0\""),
+        var agentVersion = request.UserAgent?.Split('/').LastOrDefault();
+        Check(auth.Contains("Client=\"Embistic\"") && auth.Contains($"DeviceId=\"{expectedId}\"")
+            && Version.TryParse(agentVersion, out _) && auth.Contains($"Version=\"{agentVersion}\""),
             "Stable Windows client identity");
         using var reader = new StreamReader(request.InputStream, Encoding.UTF8);
         using var body = JsonDocument.Parse(await reader.ReadToEndAsync());
