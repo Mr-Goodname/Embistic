@@ -61,4 +61,8 @@ public sealed class AppSettings
     public string LoginMode { get; set; } = "ApiKey";
     public bool CheckUpdatesAutomatically { get; set; } = true;
     public DisplaySettings Display { get; set; } = new();
+    public bool CloseToTray { get; set; } = true;
+    public bool AutoCacheMusic { get; set; }
+    public string DownloadDirectory { get; set; } = "";
+    public List<NetworkLyricsSource> LyricsSources { get; set; } = new();
 }

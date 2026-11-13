@@ -31,7 +31,8 @@ internal static class Program
                 Check(LyricScrollMath.CenterOffset(double.NaN, 100, 500, 2000) == 0, "Rejects invalid layout values");
                 Check(!LyricScrollMath.IsInViewport(0, 100, 200, 500) && LyricScrollMath.IsInViewport(150, 100, 200, 500), "Only intersecting rows qualify for animations");
                 var view = new AnimatedLyricsView();
-                window = new Window { Content = view, Width = 640, Height = 600, Left = -10000, Top = -10000, WindowStartupLocation = WindowStartupLocation.Manual, ShowInTaskbar = false, ShowActivated = false, Opacity = 0, Background = new SolidColorBrush(Color.FromRgb(12, 16, 21)) };
+                view.ApplyAppearance(new LyricAppearanceSettings { ScrollDurationMs = 1200, TransitionDurationMs = 1000 });
+                window = new Window { Content = view, Width = 640, Height = 600, Left = SystemParameters.WorkArea.Right - 650, Top = SystemParameters.WorkArea.Bottom - 610, WindowStartupLocation = WindowStartupLocation.Manual, ShowInTaskbar = false, ShowActivated = false, Opacity = .01, Background = new SolidColorBrush(Color.FromRgb(12, 16, 21)) };
                 window.Show();
                 await Dispatcher.Yield(DispatcherPriority.Loaded);
                 var lines = Enumerable.Range(0, 24).Select(index => new LyricsLine(TimeSpan.FromSeconds(index * 5), index == 2
@@ -48,15 +49,21 @@ internal static class Program
                 Check(view.ActiveLineIndex == 2 && target > before + 100, "New active line targets its measured center");
                 Check(Math.Abs(view.CurrentScrollOffset - before) < 8, "A transition does not jump to its destination immediately");
                 await Task.Delay(160);
-                Check(view.CurrentScrollOffset > before + 1 && view.CurrentScrollOffset < target - 1, "Scroll offset progresses through intermediate values");
+                Check(view.CurrentScrollOffset > before + 1 && view.CurrentScrollOffset < target - 1, $"Scroll offset progresses through intermediate values (from={before:F1}, current={view.CurrentScrollOffset:F1}, to={target:F1})");
                 var focusedContent = (StackPanel)((Button)rows.Children[2]).Content;
-                var focusedMain = (TextBlock)focusedContent.Children[0];
+                var focusedMain = (OutlinedLyricsText)focusedContent.Children[0];
                 Check(focusedMain.Opacity > .72 && focusedMain.Opacity < 1, "Active lyric opacity transitions through intermediate values");
                 view.UpdatePosition(10300);
-                await Task.Delay(500);
+                await WaitUntilAsync(() => Math.Abs(view.CurrentScrollOffset - target) < 2, "Repeated ticks did not reach the original scroll destination");
+                await Task.Delay(50);
                 Check(Math.Abs(view.CurrentScrollOffset - target) < 2, "Repeated ticks on one lyric do not restart scrolling");
                 var focusedScale = (ScaleTransform)((TransformGroup)focusedContent.RenderTransform).Children[0];
-                Check(Math.Abs(focusedScale.ScaleX - 1.04) < .001 && focusedMain.Opacity == 1, "Active lyric settles at the configured focus scale and opacity");
+                Check(Math.Abs(focusedScale.ScaleX - 1.18) < .001 && focusedMain.Opacity == 1, "Active lyric settles at the configured focus scale and opacity");
+                var neighbor = (StackPanel)((Button)rows.Children[3]).Content;
+                var distant = (StackPanel)((Button)rows.Children[6]).Content;
+                var neighborScale = (ScaleTransform)((TransformGroup)neighbor.RenderTransform).Children[0];
+                var distantScale = (ScaleTransform)((TransformGroup)distant.RenderTransform).Children[0];
+                Check(neighborScale.ScaleX < focusedScale.ScaleX && distantScale.ScaleX < neighborScale.ScaleX, "Neighboring lyrics shrink progressively with distance from the playing line");
                 var scroller = (ScrollViewer)view.FindName("Scroller");
                 scroller.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
                 await Task.Delay(300);
@@ -71,7 +78,7 @@ internal static class Program
                 Check(!view.IsFollowingPlayback && Math.Abs(view.CurrentScrollOffset - manualOffset) < 2,
                     $"Paused playback preserves manual reading position after five seconds (following={view.IsFollowingPlayback}, expected={manualOffset:F2}, actual={view.CurrentScrollOffset:F2})");
                 view.UpdatePosition(10500);
-                await Task.Delay(620);
+                await WaitUntilAsync(() => view.IsFollowingPlayback && Math.Abs(view.CurrentScrollOffset - view.TargetScrollOffset) < 2, "Playback did not restore following after the manual hold");
                 Check(view.IsFollowingPlayback && Math.Abs(view.CurrentScrollOffset - view.TargetScrollOffset) < 2, "Playback motion restores following after the manual hold");
                 long? requested = null;
                 view.SeekRequested += timestamp => requested = timestamp;
@@ -91,6 +98,19 @@ internal static class Program
                 window.Width = 420;
                 await Task.Delay(120);
                 Check(Math.Abs(view.CurrentScrollOffset - view.TargetScrollOffset) < 2, "Resize recomputes centered offsets after wrapping");
+                view.UpdatePlayback(12000, true);
+                await Task.Delay(130);
+                Check(view.InterpolatedPositionMs >= 12100, "Playback clock advances smoothly between audio position observations");
+                var beforeRepeated = view.InterpolatedPositionMs;
+                view.UpdatePlayback(12000, true);
+                Check(view.InterpolatedPositionMs >= beforeRepeated, "Repeated coarse audio observations do not rewind the interpolated clock");
+                await Task.Delay(1250);
+                Check(view.InterpolatedPositionMs <= 13201, "Stale audio observations bound interpolation during buffering");
+                view.UpdatePlayback(12000, false);
+                await Task.Delay(120);
+                Check(Math.Abs(view.InterpolatedPositionMs - 12000) < 1, "Paused playback freezes the interpolated lyric clock");
+                view.UpdatePlayback(1000, false);
+                Check(Math.Abs(view.InterpolatedPositionMs - 1000) < 1, "Seeking immediately rebases the playback clock");
                 if (Environment.GetCommandLineArgs().Skip(1).FirstOrDefault() is { } imagePath)
                 {
                     view.ApplyAppearance(new LyricAppearanceSettings());

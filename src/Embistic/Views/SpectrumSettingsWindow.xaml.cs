@@ -18,9 +18,9 @@ public partial class SpectrumSettingsWindow : Window
 {
     private SpectrumSettings _editable;
     private readonly Dictionary<string, TextBox> _colors = new();
-    private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
+    private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(22) };
     private readonly AudioSpectrumAnalyzer _previewAnalyzer = new(WaveFormat.CreateIeeeFloatWaveFormat(48000, 1));
-    private readonly byte[] _demoBytes = new byte[2048 * 4];
+    private readonly byte[] _demoBytes = new byte[1024 * 4];
     private int _demoSample;
     private bool _loading, _closed;
     public SpectrumSettings Result { get; private set; }
@@ -49,11 +49,17 @@ public partial class SpectrumSettingsWindow : Window
         Number(GeneralFields, "频段数量", 16, 192, _editable.BarCount, value => _editable.BarCount = (int)value, 1, "SpectrumBarCount");
         Number(GeneralFields, "显示高度", 30, 240, _editable.Height, value => _editable.Height = value, 1, "SpectrumHeight", " px");
         Number(GeneralFields, "响应灵敏度", .1, 8, _editable.Gain, value => _editable.Gain = value, .1, "SpectrumGain", " ×");
-        Number(GeneralFields, "平滑程度", 0, .95, _editable.Smoothing, value => _editable.Smoothing = value, .01, "SpectrumSmoothing");
+        Number(GeneralFields, "响应平滑", 0, .95, _editable.Smoothing, value => _editable.Smoothing = value, .01, "SpectrumSmoothing");
         Number(GeneralFields, "最低频率", 10, 4000, _editable.MinFrequency, value => _editable.MinFrequency = value, 10, "SpectrumMinFrequency", " Hz");
         Number(GeneralFields, "最高频率", 100, 24000, _editable.MaxFrequency, value => _editable.MaxFrequency = value, 100, "SpectrumMaxFrequency", " Hz");
-        Number(GeneralFields, "绘制帧率", 15, 60, _editable.FrameRate, value => _editable.FrameRate = (int)value, 1, "SpectrumFrameRate", " fps");
-        Hint(GeneralFields, "低平滑值反应更快；高平滑值更柔和。频段按对数频率分布。");
+        Number(GeneralFields, "绘制帧率", 30, 144, _editable.FrameRate, value => _editable.FrameRate = (int)value, 1, "SpectrumFrameRate", " fps");
+        Hint(GeneralFields, "低平滑值反应更快；高平滑值更柔和。曲线始终圆滑，绘制帧率独立于响应平滑，最高跟随屏幕刷新率。");
+        Heading(GeneralFields, "显示位置 · 可多选");
+        Toggle(GeneralFields, "顶部", _editable.ShowTop, value => _editable.ShowTop = value, "SpectrumShowTop");
+        Toggle(GeneralFields, "底部", _editable.ShowBottom, value => _editable.ShowBottom = value, "SpectrumShowBottom");
+        Toggle(GeneralFields, "左侧", _editable.ShowLeft, value => _editable.ShowLeft = value, "SpectrumShowLeft");
+        Toggle(GeneralFields, "右侧", _editable.ShowRight, value => _editable.ShowRight = value, "SpectrumShowRight");
+        Toggle(GeneralFields, "环绕专辑封面", _editable.ShowRing, value => _editable.ShowRing = value, "SpectrumShowRing");
 
         Heading(StyleFields, "配色与细节");
         ColorField(StyleFields, "起始颜色", "ColorStart", _editable.ColorStart);
@@ -88,10 +94,11 @@ public partial class SpectrumSettingsWindow : Window
         parent.Children.Add(block);
     }
 
-    private void Toggle(Panel parent, string label, bool initial, Action<bool> assign)
+    private void Toggle(Panel parent, string label, bool initial, Action<bool> assign, string? id = null)
     {
         var checkbox = new CheckBox { Content = label, IsChecked = initial, Margin = new Thickness(0, 8, 0, 10) };
         AutomationProperties.SetName(checkbox, label);
+        if (id is not null) AutomationProperties.SetAutomationId(checkbox, id);
         checkbox.Checked += (_, _) => { assign(true); Changed(); };
         checkbox.Unchecked += (_, _) => { assign(false); Changed(); };
         parent.Children.Add(checkbox);
@@ -144,11 +151,19 @@ public partial class SpectrumSettingsWindow : Window
             ValidationText.Text = "最低频率需要小于最高频率。";
             SaveButton.IsEnabled = false; return;
         }
+        if (_editable.Enabled && !_editable.ShowTop && !_editable.ShowBottom && !_editable.ShowLeft && !_editable.ShowRight && !_editable.ShowRing)
+        {
+            ValidationText.Text = "请选择至少一个显示位置，或关闭频谱。";
+            SaveButton.IsEnabled = false; return;
+        }
         _editable.ColorStart = _colors["ColorStart"].Text.Trim();
         _editable.ColorEnd = _colors["ColorEnd"].Text.Trim();
         Result = _editable.Clone(); Result.Normalize();
         PreviewSpectrum.ApplySettings(Result);
         PreviewSpectrum.IsPlaying = PreviewEnabledBox.IsChecked == true && Result.Enabled;
+        RingPreview.Visibility = Result.ShowRing ? Visibility.Visible : Visibility.Collapsed;
+        PreviewRingSpectrum.ApplySettings(Result);
+        PreviewRingSpectrum.IsPlaying = PreviewSpectrum.IsPlaying && Result.ShowRing;
         ValidationText.Text = "频谱读取本机输出；DLNA 音箱的音频无法在电脑回环捕获。";
         SaveButton.IsEnabled = true;
         if (notify) PreviewChanged?.Invoke(Result.Clone());
@@ -157,20 +172,25 @@ public partial class SpectrumSettingsWindow : Window
     private void FeedPreview()
     {
         if (_closed || !IsVisible || PreviewEnabledBox.IsChecked != true || !Result.Enabled) return;
-        for (var i = 0; i < 2048; i++)
+        for (var i = 0; i < 1024; i++)
         {
             var time = (_demoSample + i) / 48000.0;
             var signal = .14 * Math.Sin(2 * Math.PI * 94 * time) * (.6 + .4 * Math.Sin(time * 2))
                 + .08 * Math.Sin(2 * Math.PI * 750 * time) + .055 * Math.Sin(2 * Math.PI * 3500 * time);
             BinaryPrimitives.WriteInt32LittleEndian(_demoBytes.AsSpan(i * 4, 4), BitConverter.SingleToInt32Bits((float)signal));
         }
-        _demoSample += 2048;
-        _previewAnalyzer.ProcessPcm(_demoBytes, bins => PreviewSpectrum.SetSpectrum(bins, 48000));
+        _demoSample += 1024;
+        _previewAnalyzer.ProcessPcm(_demoBytes, bins =>
+        {
+            PreviewSpectrum.SetSpectrum(bins, 48000);
+            if (Result.ShowRing) PreviewRingSpectrum.SetSpectrum(bins, 48000);
+        });
     }
 
     private void PreviewEnabled_Click(object sender, RoutedEventArgs e)
     {
         PreviewSpectrum.IsPlaying = PreviewEnabledBox.IsChecked == true && Result.Enabled;
+        PreviewRingSpectrum.IsPlaying = PreviewSpectrum.IsPlaying && Result.ShowRing;
         if (PreviewSpectrum.IsPlaying) _previewTimer.Start(); else _previewTimer.Stop();
     }
 
@@ -181,7 +201,7 @@ public partial class SpectrumSettingsWindow : Window
         _previewTimer.Start(); FeedPreview();
     }
 
-    private void Window_Closed(object? sender, EventArgs e) { _closed = true; _previewTimer.Stop(); PreviewSpectrum.IsPlaying = false; }
+    private void Window_Closed(object? sender, EventArgs e) { _closed = true; _previewTimer.Stop(); PreviewSpectrum.IsPlaying = false; PreviewRingSpectrum.IsPlaying = false; }
     private void Reset_Click(object sender, RoutedEventArgs e) { _editable = new SpectrumSettings(); BuildFields(); RefreshPreview(true); }
     private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
     private void Save_Click(object sender, RoutedEventArgs e) { RefreshPreview(false); if (SaveButton.IsEnabled) DialogResult = true; }

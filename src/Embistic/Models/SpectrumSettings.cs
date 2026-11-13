@@ -20,8 +20,14 @@ public sealed class SpectrumSettings
     public bool RoundedBars { get; set; } = true;
     public bool GlowEnabled { get; set; }
     public double GlowRadius { get; set; } = 8;
-    public int FrameRate { get; set; } = 30;
+    public int FrameRate { get; set; } = 60;
     public bool PeakHold { get; set; }
+    public bool ShowTop { get; set; }
+    public bool ShowBottom { get; set; } = true;
+    public bool ShowLeft { get; set; }
+    public bool ShowRight { get; set; }
+    public bool ShowRing { get; set; }
+    public int Revision { get; set; }
 
     public SpectrumSettings Clone() => (SpectrumSettings)MemberwiseClone();
 
@@ -41,7 +47,12 @@ public sealed class SpectrumSettings
         Opacity = Clamp(Opacity, 0, 1, .7);
         BarWidthRatio = Clamp(BarWidthRatio, .15, 1, .65);
         GlowRadius = Clamp(GlowRadius, 0, 32, 8);
-        FrameRate = Math.Clamp(FrameRate, 15, 60);
+        // Older preferences used 30 fps by default. Upgrade that default once;
+        // an explicitly selected 30 fps is preserved after this revision.
+        if (Revision < 1 && FrameRate == 30) FrameRate = 60;
+        Revision = 1;
+        FrameRate = Math.Clamp(FrameRate, 30, 144);
+        if (Enabled && !ShowTop && !ShowBottom && !ShowLeft && !ShowRight && !ShowRing) ShowBottom = true;
     }
 
     private static double Clamp(double value, double minimum, double maximum, double fallback) =>

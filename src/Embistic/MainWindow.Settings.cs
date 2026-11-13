@@ -41,6 +41,9 @@ public partial class MainWindow
     {
         ++_playVersion; ++_connectVersion;
         _queueSelectionCts?.Cancel(); _pageCts?.Cancel(); _lyricCts?.Cancel();
+        _pendingAutomaticCache = null;
+        _downloadCts?.Cancel();
+        await _downloadTask;
         _document = LyricsDocument.Empty(); UpdateLyricsBindings();
         await _transportGate.WaitAsync();
         try
@@ -91,8 +94,8 @@ public partial class MainWindow
     private void SyncSpectrumCapture()
     {
         if (_closing) return;
-        var wanted = _ready && _section == "lyrics" && _playing && Current is not null && _renderer is null && _spectrumSettings.Enabled;
-        ImmersivePlayer.Spectrum.IsPlaying = wanted;
+        var wanted = _ready && IsVisible && WindowState != WindowState.Minimized && _section == "lyrics" && _playing && Current is not null && _renderer is null && _spectrumSettings.Enabled;
+        ImmersivePlayer.SetSpectrumPlaying(wanted);
         if (!wanted)
         {
             if (_spectrumService.IsRunning) _spectrumService.Stop();
@@ -139,11 +142,28 @@ public partial class MainWindow
     private async Task DownloadCurrentAsync()
     {
         if (Current is not { } track || _emby is null || track.Id.StartsWith("radio:")) { Status = "选择一首 Emby 歌曲后再下载。"; return; }
-        _downloads ??= new DownloadService(_settings);
-        Status = "正在下载 · " + track.Title;
-        await _downloads.DownloadAsync(track, _emby.GetStreamUrl(track), new Progress<double>(value => Status = $"下载 {value:0}% · {track.Title}"));
-        Status = "已下载 · " + track.Title;
+        if (!_downloadTask.IsCompleted) { Status = "已有下载进行中，可在更多菜单取消。"; return; }
+        _downloadTask = DownloadTrackAsync(track);
+        await _downloadTask;
     }
+    private async void DownloadCurrent_Click(object sender, RoutedEventArgs e) => await GuardAsync(DownloadCurrentAsync);
+    private async void ContextDownload_Click(object sender, RoutedEventArgs e) => await GuardAsync(async () =>
+    {
+        if (TrackList.SelectedItem is not Track track) return;
+        if (!_downloadTask.IsCompleted) { Status = "已有下载进行中，可在更多菜单取消。"; return; }
+        _downloadTask = DownloadTrackAsync(track);
+        await _downloadTask;
+    });
+    private async void ContextRemoveDownload_Click(object sender, RoutedEventArgs e) => await GuardAsync(() =>
+    {
+        if (TrackList.SelectedItem is not Track track || _downloads is null || !_downloads.IsDownloaded(track)) { Status = "这首歌曲尚未下载。"; return Task.CompletedTask; }
+        if (!_downloadTask.IsCompleted) { Status = "请等待下载完成或先取消下载。"; return Task.CompletedTask; }
+        if (Current?.Id == track.Id && _renderer is null) { Status = "正在播放的下载请在切换歌曲后移除。"; return Task.CompletedTask; }
+        _downloads.Remove(track);
+        Status = "已移除本机下载 · " + track.Title;
+        if (_section == "collection") Downloads_Click(this, new RoutedEventArgs());
+        return Task.CompletedTask;
+    });
     private void BackupSettings_Click(object sender, RoutedEventArgs e)
     {
         var picker = new SaveFileDialog { Filter = "Embistic 设置|*.json", FileName = "Embistic-settings.json" };

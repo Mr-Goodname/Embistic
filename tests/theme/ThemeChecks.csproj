@@ -4,6 +4,7 @@
   <Compile Include="../../src/Embistic/Models/ThemeSettings.cs" Link="ThemeSettings.cs"/>
   <Compile Include="../../src/Embistic/Services/ThemeService.cs" Link="ThemeService.cs"/>
   <Compile Include="../../src/Embistic/ArtworkConverter.cs" Link="ArtworkConverter.cs"/>
+  <Compile Include="../../src/Embistic/Controls/SliderDragBehavior.cs" Link="SliderDragBehavior.cs"/>
   <Compile Include="../../src/Embistic/Views/ThemeSettingsWindow.xaml.cs" Link="ThemeSettingsWindow.xaml.cs"/>
   <Page Include="../../src/Embistic/Views/ThemeSettingsWindow.xaml" Link="ThemeSettingsWindow.xaml"/>
  </ItemGroup>

@@ -23,7 +23,7 @@ internal static class Program
         var end = appXaml.IndexOf("</Application.Resources>", StringComparison.Ordinal);
         var resources = appXaml[start..end];
         var dictionary = (ResourceDictionary)XamlReader.Parse(
-            "<ResourceDictionary xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" xmlns:local=\"clr-namespace:Embistic;assembly=ThemeChecks\">" + resources + "</ResourceDictionary>");
+            "<ResourceDictionary xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" xmlns:local=\"clr-namespace:Embistic;assembly=ThemeChecks\" xmlns:controls=\"clr-namespace:Embistic.Controls;assembly=ThemeChecks\">" + resources + "</ResourceDictionary>");
         app.Resources = dictionary;
         var bad = new ThemeSettings { Mode = "something", AccentColor = "https://bad" }; bad.Normalize();
         Check(bad.Mode == "Dark" && bad.AccentColor == "#ADC9F0", "invalid settings normalized");

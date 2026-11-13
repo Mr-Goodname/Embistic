@@ -24,6 +24,7 @@ namespace Embistic;
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private AppSettings _settings = SettingsService.Load();
+    private Action<AppSettings> _saveSettings = SettingsService.Save;
     private EmbyClient? _emby;
     private PlaybackService? _player;
     private readonly DlnaService _dlna = new();
@@ -113,6 +114,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         foreach (var p in new[] { nameof(CurrentTitle), nameof(CurrentArtist), nameof(QualityLabel), nameof(FavoriteGlyph), nameof(PlayGlyph), nameof(OutputLabel), nameof(CurrentLyric), nameof(NextLyric) }) Notify(p);
         ImmersivePlayer.SetTrack(Current);
         ImmersivePlayer.UpdatePlayback(_position, _playing);
+        AnimatedLyrics.UpdatePlayback(_position, _playing, _settings.LyricsOffsetMs);
+        _desktop?.UpdatePlayback(_position, _playing);
+        _tray?.Update(CurrentTitle, _playing);
         SyncSpectrumCapture();
     }
     private static string FormatTime(long ms) => TimeSpan.FromMilliseconds(Math.Max(0, ms)).ToString(ms >= 3600000 ? @"h\:mm\:ss" : @"m\:ss");
@@ -126,7 +130,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ApplyAppearance(_settings.Appearance);
         ApplySpectrumSettings(_settings.Spectrum);
         ApplyDisplaySettings();
-        _spectrumService.SpectrumReady += bins => ImmersivePlayer.Spectrum.SetSpectrum(bins, _spectrumService.SampleRate);
+        _spectrumService.SpectrumReady += bins => ImmersivePlayer.SetSpectrum(bins, _spectrumService.SampleRate);
         _spectrumService.StatusChanged += text => Dispatcher.BeginInvoke(() => { if (!_closing) ImmersivePlayer.SetSpectrumStatus(text); });
         ImmersivePlayer.BackRequested += () => ShowPage(_previousSection == "lyrics" ? "home" : _previousSection);
         ImmersivePlayer.FullscreenRequested += ToggleFullscreen;
@@ -134,16 +138,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ImmersivePlayer.SpectrumSettingsRequested += () => SpectrumSettings_Click(this, new RoutedEventArgs());
         ImmersivePlayer.ImportLyricsRequested += () => ImportLyrics_Click(this, new RoutedEventArgs());
         ImmersivePlayer.DesktopLyricsRequested += () => SetDesktopLyrics(!_settings.DesktopLyricsEnabled);
+        ImmersivePlayer.OffsetChangeRequested += delta => SetOffset(_settings.LyricsOffsetMs + delta);
+        ImmersivePlayer.OffsetResetRequested += () => SetOffset(0);
+        ImmersivePlayer.SetLyricsOffset(_settings.LyricsOffsetMs);
         AnimatedLyrics.SeekRequested += async timestamp => await GuardAsync(() => SeekAsync((long)(timestamp - _settings.LyricsOffsetMs)));
         ServerBox.Text = _settings.ServerUrl;
         ApiKeyBox.Password = _settings.ApiKey;
         UsernameBox.Text = _settings.UserName;
         LoginModeBox.SelectedValue = _settings.LoginMode;
         AutoUpdateBox.IsChecked = _settings.CheckUpdatesAutomatically;
+        _lyrics.ConfigureSources(_settings.LyricsSources);
         Users.Add(new EmbyUser(_settings.UserId, string.IsNullOrEmpty(_settings.UserName) ? "尚未连接" : _settings.UserName));
         UsersBox.SelectedIndex = 0;
         if (!_settings.Display.RememberVolume) _settings.Volume = _settings.Display.StartupVolume;
         VolumeSlider.Value = _settings.Volume;
+        SeekBar.PreviewMouseLeftButtonDown -= Seek_Down;
+        SeekBar.PreviewMouseLeftButtonUp -= Seek_Up;
+        SeekBar.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler(Seek_Down), true);
+        SeekBar.AddHandler(PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler(Seek_Up), true);
+        SeekBar.LostMouseCapture += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.Input, () => { if (!_seekReleasePending && !SeekBar.IsMouseCaptureWithin) _seeking = false; });
         InitializeLocalStores();
         DesktopEnabledBox.IsChecked = _settings.DesktopLyricsEnabled;
         DesktopLockedBox.IsChecked = _settings.LyricsLocked;
@@ -181,6 +194,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void Window_SourceInitialized(object? sender, EventArgs e)
     {
         _theme.ApplyWindowChrome(this);
+        InitializeTray();
     }
 
     private async Task ConnectAsync()
@@ -278,7 +292,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         Motion.Enter(PageTransitionHost, _appearance, page: true);
         Motion.Enter(PageHeading, _appearance, page: true);
-        if (section == "lyrics") AnimatedLyrics.UpdatePosition(_position, _settings.LyricsOffsetMs);
+        if (section == "lyrics") AnimatedLyrics.UpdatePlayback(_position, _playing, _settings.LyricsOffsetMs);
         SyncSpectrumCapture();
     }
 
@@ -501,6 +515,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _desktop?.SetTrack(track.Title, track.Artist);
             if (client is not null) _ = QueueSessionReportAsync(client, track, 0, false, "start");
             _ = LoadLyricsAsync(track, version);
+            StartAutomaticCache(track);
         }
         catch
         {
@@ -566,6 +581,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         Replace(LyricLines, _document.Lines);
         AnimatedLyrics.SetDocument(_document);
+        AnimatedLyrics.UpdatePlayback(_position, _playing, _settings.LyricsOffsetMs);
         foreach (var name in new[] { nameof(HasPlainLyrics), nameof(PlainLyrics), nameof(LyricsInfo), nameof(CurrentLyric), nameof(NextLyric) }) Notify(name);
     }
 
@@ -634,8 +650,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Motion.Enter(SidebarCurrentLyric, _appearance);
             Motion.Enter(SidebarNextLyric, _appearance);
         }
-        if (_section == "lyrics") AnimatedLyrics.UpdatePosition(_position, _settings.LyricsOffsetMs);
-        if (_desktop?.IsVisible == true) _desktop.UpdateLyrics(_document, _position);
+        if (_section == "lyrics") AnimatedLyrics.UpdatePlayback(_position, _playing, _settings.LyricsOffsetMs);
+        if (_desktop?.IsVisible == true) _desktop.UpdateLyrics(_document, _position, _playing);
         if (_tick % 50 == 0 && Current is { } current && !_reporting)
         {
             _reporting = true;
@@ -730,15 +746,41 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void ShuffleToggle_Click(object sender, RoutedEventArgs e) { _shuffle = !_shuffle; Notify(nameof(ShuffleBrush)); Status = _shuffle ? "已开启随机播放" : "已关闭随机播放"; }
     private void Repeat_Click(object sender, RoutedEventArgs e) { _repeat = (_repeat + 1) % 3; Notify(nameof(RepeatGlyph)); Notify(nameof(RepeatBrush)); Notify(nameof(RepeatLabel)); Status = RepeatLabel; }
     private void Seek_Down(object sender, MouseButtonEventArgs e) => _seeking = true;
-    private async void Seek_Up(object sender, MouseButtonEventArgs e) { if (!_seeking) return; _seeking = false; await GuardAsync(() => SeekAsync((long)(_duration * SeekBar.Value / 100))); }
+    private bool _seekReleasePending;
+    private async void Seek_Up(object sender, MouseButtonEventArgs e)
+    {
+        if (!_seeking || _seekReleasePending) return;
+        _seekReleasePending = true;
+        try
+        {
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Input);
+            var target = (long)(_duration * SeekBar.Value / 100);
+            _seeking = false;
+            await GuardAsync(() => SeekAsync(target));
+        }
+        finally { _seekReleasePending = false; }
+    }
     private async void Seek_KeyUp(object sender, KeyEventArgs e) { if (e.Key is Key.Left or Key.Right or Key.Home or Key.End) { await GuardAsync(() => SeekAsync((long)(_duration * SeekBar.Value / 100))); e.Handled = true; } }
     private async Task SeekAsync(long position)
     {
-        if (Current is null || PlaybackSourceResolver.IsRadio(Current)) return;
-        position = Math.Clamp(position, 0, Math.Max(0, _duration));
-        if (_renderer is { } device) await _dlna.SeekAsync(device, position); else _player?.Seek(position);
-        _position = position;
-        await ReportAsync(Current, _position, !_playing, "progress");
+        if (Current is not { } track || PlaybackSourceResolver.IsRadio(track)) return;
+        var version = _playVersion;
+        var renderer = _renderer;
+        await _transportGate.WaitAsync();
+        try
+        {
+            if (_closing || version != _playVersion || Current != track || renderer != _renderer) return;
+            position = Math.Clamp(position, 0, Math.Max(0, _duration));
+            if (renderer is not null) await _dlna.SeekAsync(renderer, position); else _player?.Seek(position);
+            if (_closing || version != _playVersion || Current != track || renderer != _renderer) return;
+            _position = position;
+            AnimatedLyrics.UpdatePlayback(_position, _playing, _settings.LyricsOffsetMs, forceRebase: true);
+            _desktop?.UpdateLyrics(_document, _position, _playing, forceRebase: true);
+            SeekBar.Value = _duration > 0 ? _position * 100d / _duration : 0;
+            Notify(nameof(PositionLabel));
+            _ = ReportAsync(track, _position, !_playing, "progress");
+        }
+        finally { _transportGate.Release(); }
     }
     private void Volume_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
@@ -938,7 +980,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _desktop.SetTrack(CurrentTitle, CurrentArtist);
             _desktop.ApplyAppearance(_appearance);
             _desktop.Show(); _desktop.IsLocked = _settings.LyricsLocked;
-            _desktop.UpdateLyrics(_document, _position);
+            _desktop.UpdateLyrics(_document, _position, _playing);
         }
         else _desktop?.Hide();
         DesktopEnabledBox.IsChecked = enabled;
@@ -948,6 +990,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_desktop is null || _appearancePreviewActive) return;
         _settings.LyricsOffsetMs = _desktop.OffsetMs; _settings.LyricFontSize = _desktop.LyricsFontSize;
+        ImmersivePlayer.SetLyricsOffset(_settings.LyricsOffsetMs);
+        AnimatedLyrics.UpdatePlayback(_position, _playing, _settings.LyricsOffsetMs);
         _settings.Appearance.DesktopFontSize = _desktop.LyricsFontSize;
         _settings.Appearance.DesktopWidth = _desktop.Width;
         _appearance.DesktopFontSize = _desktop.LyricsFontSize;
@@ -960,7 +1004,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void OffsetMinus_Click(object sender, RoutedEventArgs e) => SetOffset(_settings.LyricsOffsetMs - 250);
     private void OffsetPlus_Click(object sender, RoutedEventArgs e) => SetOffset(_settings.LyricsOffsetMs + 250);
     private void OffsetReset_Click(object sender, RoutedEventArgs e) => SetOffset(0);
-    private void SetOffset(double offset) { _settings.LyricsOffsetMs = Math.Clamp(offset, -600000, 600000); if (_desktop is not null) _desktop.OffsetMs = _settings.LyricsOffsetMs; Notify(nameof(LyricsInfo)); SaveSettings(); }
+    private void SetOffset(double offset)
+    {
+        _settings.LyricsOffsetMs = double.IsFinite(offset) ? Math.Clamp(offset, -600000, 600000) : 0;
+        if (_desktop is not null) _desktop.OffsetMs = _settings.LyricsOffsetMs;
+        ImmersivePlayer.SetLyricsOffset(_settings.LyricsOffsetMs);
+        AnimatedLyrics.UpdatePlayback(_position, _playing, _settings.LyricsOffsetMs);
+        Notify(nameof(LyricsInfo)); SaveSettings();
+    }
     private void ApplyAppearance(LyricAppearanceSettings appearance)
     {
         _appearance = appearance.Clone();
@@ -1002,7 +1053,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (Current is null) { Status = "先播放一首歌曲，再导入对应的歌词。"; return; }
         var track = Current;
         var version = _playVersion;
-        var picker = new OpenFileDialog { Filter = "歌词文件|*.lrc;*.txt|所有文件|*.*", Title = "选择歌词" };
+        var picker = new OpenFileDialog { Filter = "歌词文件|*.lrc;*.yrc;*.qrc;*.ttml;*.xml;*.txt|所有文件|*.*", Title = "选择歌词" };
         if (picker.ShowDialog(this) == true) await GuardAsync(async () =>
         {
             if (version == _playVersion) _lyricCts?.Cancel();
@@ -1040,7 +1091,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     });
     private void SaveSettings()
     {
-        try { SettingsService.Save(_settings); }
+        try { _saveSettings(_settings); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException) { Status = "设置未能保存，请检查用户目录权限。"; }
     }
     private Task ReportAsync(Track track, long position, bool paused, string kind) =>
@@ -1072,12 +1123,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_allowClose) return;
         e.Cancel = true;
         if (_closing) return;
+        if (!_exitRequested && _settings.CloseToTray && _tray?.Available == true)
+        {
+            Hide();
+            Status = "已隐藏到托盘，音乐继续播放。右键托盘图标可退出。";
+            return;
+        }
         _closing = true;
         ++_playVersion;
         ++_connectVersion;
         _timer.Stop(); _searchTimer.Stop(); _volumeTimer.Stop();
         _pageCts?.Cancel(); _lyricCts?.Cancel();
         _queueSelectionCts?.Cancel();
+        _downloadCts?.Cancel();
+        await _downloadTask;
         SaveSettings();
         _desktop?.Hide();
         if (Current is { } track)
@@ -1102,6 +1161,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _spectrumService.Dispose();
         _downloads?.Dispose();
         _theme.Dispose();
+        _tray?.Dispose();
         _allowClose = true;
         Application.Current.Shutdown();
     }

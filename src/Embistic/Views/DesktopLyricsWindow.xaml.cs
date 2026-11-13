@@ -8,6 +8,7 @@ using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using Embistic.Models;
 using Embistic.Services;
+using Embistic.Controls;
 
 namespace Embistic.Views;
 
@@ -33,6 +34,8 @@ public partial class DesktopLyricsWindow : Window
     private bool _secondaryIsTranslation;
     private int _transitionVersion;
     private LyricAppearanceSettings _appearance = new();
+    private readonly LyricPlaybackClock _clock = new();
+    private bool _renderAttached;
 
     public event Action? UserClosed;
     public event Action? OptionsChanged;
@@ -42,7 +45,9 @@ public partial class DesktopLyricsWindow : Window
         InitializeComponent();
         SourceInitialized += (_, _) => ApplyNativeStyle();
         SizeChanged += Window_SizeChanged;
-        IsVisibleChanged += (_, e) => { if (e.NewValue is false) StopTransition(); };
+        IsVisibleChanged += (_, e) => { if (e.NewValue is false) { StopTransition(); StopRendering(); } else StartRendering(); };
+        Loaded += (_, _) => StartRendering();
+        Closed += (_, _) => StopRendering();
         ApplyAppearance(_appearance);
     }
 
@@ -67,7 +72,7 @@ public partial class DesktopLyricsWindow : Window
         {
             if (_isLocked == value) return;
             _isLocked = value;
-            ResizeMode = value ? ResizeMode.NoResize : ResizeMode.CanResizeWithGrip;
+            ResizeMode = value || !IsMouseOver ? ResizeMode.NoResize : ResizeMode.CanResizeWithGrip;
             UpdateBorder();
             ApplyNativeStyle();
             UpdateModeLabel();
@@ -103,9 +108,9 @@ public partial class DesktopLyricsWindow : Window
             Topmost = _appearance.DesktopTopmost;
             Width = _appearance.DesktopWidth;
             SizeToContent = SizeToContent.Height;
-            TrackHeader.Visibility = _appearance.ShowTrackInfo ? Visibility.Visible : Visibility.Collapsed;
-            var alignment = _appearance.Alignment switch { "Left" => TextAlignment.Left, "Right" => TextAlignment.Right, _ => TextAlignment.Center };
-            var mainBrush = Brush(_appearance.CurrentColor);
+            TrackHeader.Visibility = _appearance.ShowTrackInfo && IsMouseOver ? Visibility.Visible : Visibility.Collapsed;
+            var alignment = Align(_appearance.DesktopMainAlignment);
+            var mainBrush = Brush(_appearance.SungColor);
             var effect = _appearance.ShadowEnabled ? new DropShadowEffect
             {
                 Color = ParseColor(_appearance.ShadowColor), Opacity = _appearance.ShadowOpacity,
@@ -119,15 +124,17 @@ public partial class DesktopLyricsWindow : Window
                 line.Foreground = mainBrush;
                 line.TextAlignment = alignment;
                 line.Effect = effect;
+                line.ApplyLyricsStyle(_appearance);
             }
             foreach (var line in new[] { NextLine, PreviousNextLine })
             {
                 line.FontSize = _appearance.DesktopFontSize * _appearance.SecondaryScale;
                 line.FontWeight = FontWeight.FromOpenTypeWeight(Math.Clamp(_appearance.DesktopFontWeight - 200, 100, 900));
-                line.TextAlignment = alignment;
+                line.TextAlignment = Align(_appearance.DesktopSecondaryAlignment);
                 line.Effect = effect;
+                line.ApplyLyricsStyle(_appearance);
             }
-            Surface.Background = Brush(_appearance.BackgroundColor, _appearance.BackgroundOpacity);
+            Surface.Background = _appearance.DesktopBackgroundEnabled ? Brush(_appearance.BackgroundColor, _appearance.BackgroundOpacity) : Brushes.Transparent;
             UpdateBorder();
             RefreshLyrics(force: true, animate: false);
             if (_document is null) SetDisplayedLyrics(_displayedCurrent, _unfilteredSecondary, _secondaryIsTranslation, animate: false, force: true);
@@ -143,15 +150,30 @@ public partial class DesktopLyricsWindow : Window
         _document = null;
         _renderedDocument = null;
         _renderedIndex = int.MinValue;
+        _clock.Update(0, false);
         SetDisplayedLyrics(title, "正在查找歌词…", false);
     }
 
-    public void UpdateLyrics(LyricsDocument document, long positionMs)
+    public void UpdateLyrics(LyricsDocument document, long positionMs, bool playing = false, bool forceRebase = false)
     {
         _document = document;
         _positionMs = positionMs;
+        _clock.Update(positionMs, playing, forceRebase);
+        _positionMs = (long)_clock.PositionMs;
         RefreshLyrics();
+        UpdateWordProgress();
+        StartRendering();
     }
+
+    public void UpdatePlayback(long positionMs, bool playing, bool forceRebase = false)
+    {
+        _positionMs = positionMs;
+        _clock.Update(positionMs, playing, forceRebase);
+        _positionMs = (long)_clock.PositionMs;
+        RefreshLyrics(); UpdateWordProgress(); StartRendering();
+    }
+
+    public double InterpolatedPositionMs => _clock.PositionMs;
 
     private void RefreshLyrics(bool force = false, bool animate = true)
     {
@@ -181,6 +203,13 @@ public partial class DesktopLyricsWindow : Window
         var hasTranslation = _appearance.DesktopLayout == "Translation" && split >= 0 && split + 1 < text.Length;
         var secondaryText = hasTranslation ? text[(split + 1)..] : index + 1 < _document.Lines.Count ? FirstLine(_document.Lines[index + 1].Text) : "";
         SetDisplayedLyrics(string.IsNullOrWhiteSpace(primaryText) ? "♪" : primaryText, secondaryText, hasTranslation, animate, force);
+        var line = _document.Lines[index];
+        CurrentLine.SetLine(line, string.IsNullOrWhiteSpace(primaryText) ? "♪" : primaryText);
+        CurrentLine.Foreground = Brush(line.Words.Count > 0 ? _appearance.UnsungColor : _appearance.SungColor);
+        if (hasTranslation) NextLine.SetLine(line, secondaryText, split + 1);
+        else NextLine.SetLine(index + 1 < _document.Lines.Count ? _document.Lines[index + 1] : null, secondaryText);
+        if (NextLine.Words.Count > 0) NextLine.Foreground = Brush(_appearance.UnsungColor);
+        UpdateWordProgress();
     }
 
     private void SetDisplayedLyrics(string current, string secondary, bool isTranslation, bool animate = true, bool force = false)
@@ -210,8 +239,8 @@ public partial class DesktopLyricsWindow : Window
         _displayedCurrent = current;
         _displayedSecondary = displayedSecondary;
         _secondaryIsTranslation = isTranslation;
-        CurrentLine.Text = current;
-        NextLine.Text = displayedSecondary;
+        CurrentLine.SetLine(null, current);
+        NextLine.SetLine(null, displayedSecondary);
         NextLine.Visibility = showSecondary ? Visibility.Visible : Visibility.Collapsed;
         NextLine.Foreground = Brush(isTranslation ? _appearance.TranslationColor : _appearance.InactiveColor);
         SizeToContent = SizeToContent.Height;
@@ -257,7 +286,42 @@ public partial class DesktopLyricsWindow : Window
         OptionsChanged?.Invoke();
     }
 
-    private void UpdateBorder() => Surface.BorderBrush = _isLocked ? Brushes.Transparent : Brush("#3D9EBFEF");
+    private void UpdateBorder() { Surface.BorderBrush = Brushes.Transparent; Surface.BorderThickness = new Thickness(0); }
+
+    private void UpdateWordProgress()
+    {
+        CurrentLine.UpdatePlayback(_positionMs + _offsetMs);
+        NextLine.UpdatePlayback(_positionMs + _offsetMs);
+    }
+    private void StartRendering()
+    {
+        if (_renderAttached || !IsLoaded || !IsVisible) return;
+        CompositionTarget.Rendering += RenderFrame; _renderAttached = true;
+    }
+    private void StopRendering()
+    {
+        if (!_renderAttached) return;
+        CompositionTarget.Rendering -= RenderFrame; _renderAttached = false;
+    }
+    private void RenderFrame(object? sender, EventArgs args)
+    {
+        if (!_clock.IsPlaying) return;
+        _positionMs = (long)_clock.PositionMs;
+        RefreshLyrics(); UpdateWordProgress();
+    }
+    private void Window_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (_isLocked) return;
+        HoverControls.Visibility = Visibility.Visible;
+        TrackHeader.Visibility = _appearance.ShowTrackInfo ? Visibility.Visible : Visibility.Collapsed;
+        ResizeMode = ResizeMode.CanResizeWithGrip;
+    }
+    private void Window_MouseLeave(object sender, MouseEventArgs e)
+    {
+        HoverControls.Visibility = Visibility.Collapsed;
+        TrackHeader.Visibility = Visibility.Collapsed;
+        ResizeMode = ResizeMode.NoResize;
+    }
     private void UpdateModeLabel()
     {
         var mode = _isLocked ? "已锁定 · 主窗口可解锁" : "拖动移动 · 右键设置";
@@ -302,6 +366,7 @@ public partial class DesktopLyricsWindow : Window
     }
 
     private static string FirstLine(string text) { var end = text.IndexOf('\n'); return end >= 0 ? text[..end] : text; }
+    private static TextAlignment Align(string value) => value switch { "Left" => TextAlignment.Left, "Right" => TextAlignment.Right, _ => TextAlignment.Center };
     private static Color ParseColor(string value) => (Color)ColorConverter.ConvertFromString(value);
     private static SolidColorBrush Brush(string value, double opacity = 1)
     {

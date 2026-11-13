@@ -6,6 +6,8 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
+using System.Windows.Input;
+using System.Windows.Threading;
 using Embistic.Models;
 
 namespace Embistic.Controls;
@@ -24,9 +26,17 @@ public partial class ImmersivePlayerView : UserControl
     private Color _coverColor = Color.FromRgb(80, 111, 152);
     private BitmapImage? _loadingArtwork;
     private EventHandler? _downloadHandler;
+    private SpectrumView[] _spectra = [];
+    private readonly DispatcherTimer _optionsTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    private DateTime _optionsInteractionAt;
+    private bool _optionsShown = true;
+    private string _lastSpectrumStatus = "";
+    private bool _optionsKeyboardInteraction, _spectrumPlaying;
 
     public AnimatedLyricsView LyricsView => ImmersiveLyrics;
     public SpectrumView Spectrum => ImmersiveSpectrum;
+    public bool HasOpenMenu => OptionsPopup.IsOpen || _spectra.Any(view => view.ContextMenu?.IsOpen == true);
     public string SpectrumStatus { get => SpectrumStatusText.Text; set => SetSpectrumStatus(value); }
     public bool DiscAnimationEnabled
     {
@@ -39,23 +49,47 @@ public partial class ImmersivePlayerView : UserControl
     public event Action? SpectrumSettingsRequested;
     public event Action? ImportLyricsRequested;
     public event Action? DesktopLyricsRequested;
+    public event Action<double>? OffsetChangeRequested;
+    public event Action? OffsetResetRequested;
+
+    // The capture callback runs on WASAPI's worker thread. SpectrumView owns
+    // the thread-safe handoff; do not inspect visibility or dependency properties here.
+    public void SetSpectrum(float[] bins, int sampleRate)
+    {
+        foreach (var view in _spectra) view.SetSpectrum(bins, sampleRate);
+    }
+    public void SetSpectrumPlaying(bool playing)
+    {
+        _spectrumPlaying = playing;
+        foreach (var view in _spectra) view.IsPlaying = playing && _spectrumSettings.Enabled;
+    }
+    public void SetLyricsOffset(double milliseconds) => OffsetLabel.Text = $"{milliseconds:+0;-0;0} ms";
 
     public ImmersivePlayerView()
     {
         InitializeComponent();
+        _spectra = [ImmersiveSpectrum, SpectrumTop, SpectrumLeft, SpectrumRight, SpectrumRing];
         for (var diameter = 414; diameter >= 254; diameter -= 8)
         {
             var groove = new Ellipse { Width = diameter, Height = diameter, Stroke = new SolidColorBrush(Color.FromArgb(30, 129, 147, 164)), StrokeThickness = .65 };
             Canvas.SetLeft(groove, (430 - diameter) * .5); Canvas.SetTop(groove, (430 - diameter) * .5);
             Grooves.Children.Add(groove);
         }
-        ImmersiveSpectrum.SettingsRequested += () => SpectrumSettingsRequested?.Invoke();
-        Loaded += (_, _) => { UpdateTint(); SyncMotion(); };
-        Unloaded += (_, _) => { OptionsPopup.IsOpen = false; StopRotation(); };
+        foreach (var view in _spectra) view.SettingsRequested += () => SpectrumSettingsRequested?.Invoke();
+        _optionsTimer.Tick += (_, _) => UpdateOptionsVisibility();
+        _statusTimer.Tick += (_, _) => { _statusTimer.Stop(); SpectrumStatusSurface.Visibility = Visibility.Collapsed; };
+        PreviewMouseMove += (_, _) => UpdateOptionsVisibility();
+        PreviewKeyDown += (_, _) => { _optionsKeyboardInteraction = true; ShowOptions(); };
+        PreviewMouseDown += (_, _) => _optionsKeyboardInteraction = false;
+        OptionsPopup.Child.PreviewKeyDown += (_, _) => _optionsKeyboardInteraction = true;
+        OptionsPopup.Child.PreviewMouseDown += (_, _) => _optionsKeyboardInteraction = false;
+        OptionsPopup.Opened += (_, _) => ShowOptions();
+        Loaded += (_, _) => { UpdateTint(); SyncMotion(); ShowOptions(); if (IsVisible) _optionsTimer.Start(); };
+        Unloaded += (_, _) => { OptionsPopup.IsOpen = false; StopRotation(); _optionsTimer.Stop(); _statusTimer.Stop(); };
         IsVisibleChanged += (_, _) =>
         {
-            if (!IsVisible) { OptionsPopup.IsOpen = false; SyncMotion(); }
-            else ApplyAppearance(_appearance);
+            if (!IsVisible) { OptionsPopup.IsOpen = false; SyncMotion(); _optionsTimer.Stop(); }
+            else { ApplyAppearance(_appearance); ShowOptions(); _optionsTimer.Start(); }
         };
         ApplyAppearance(_appearance);
         ApplySpectrum(_spectrumSettings);
@@ -113,7 +147,7 @@ public partial class ImmersivePlayerView : UserControl
         // Position is intentionally not used to synthesize spectrum or record motion.
         // Its only source is Root's transport; the lyric view is updated independently.
         _playing = playing;
-        ImmersiveSpectrum.IsPlaying = playing && _spectrumSettings.Enabled;
+        if (!playing) SetSpectrumPlaying(false);
         SyncMotion();
     }
 
@@ -146,15 +180,50 @@ public partial class ImmersivePlayerView : UserControl
     public void ApplySpectrum(SpectrumSettings settings)
     {
         _spectrumSettings = settings.Clone(); _spectrumSettings.Normalize();
-        ImmersiveSpectrum.ApplySettings(_spectrumSettings);
+        foreach (var view in _spectra) view.ApplySettings(_spectrumSettings);
         SpectrumSection.Visibility = _spectrumSettings.Enabled ? Visibility.Visible : Visibility.Collapsed;
-        ImmersiveSpectrum.IsPlaying = _playing && _spectrumSettings.Enabled;
+        SpectrumTop.Visibility = Visible(_spectrumSettings.Enabled && _spectrumSettings.ShowTop);
+        ImmersiveSpectrum.Visibility = Visible(_spectrumSettings.Enabled && _spectrumSettings.ShowBottom);
+        SpectrumLeftHost.Visibility = Visible(_spectrumSettings.Enabled && _spectrumSettings.ShowLeft);
+        SpectrumRightHost.Visibility = Visible(_spectrumSettings.Enabled && _spectrumSettings.ShowRight);
+        SpectrumLeftHost.Width = SpectrumRightHost.Width = _spectrumSettings.Height;
+        SpectrumRingHost.Visibility = Visible(_spectrumSettings.Enabled && _spectrumSettings.ShowRing);
+        NeedleCanvas.Visibility = Visible(!_spectrumSettings.ShowRing);
+        SetSpectrumPlaying(_spectrumPlaying);
     }
 
     public void SetSpectrumStatus(string? text)
     {
-        SpectrumStatusText.Text = text ?? "";
-        SpectrumStatusSurface.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
+        text ??= "";
+        if (_lastSpectrumStatus == text) return;
+        _lastSpectrumStatus = text;
+        _statusTimer.Stop();
+        SpectrumStatusText.Text = text;
+        SpectrumStatusSurface.Visibility = Visible(!string.IsNullOrWhiteSpace(text));
+        if (!string.IsNullOrWhiteSpace(text)) _statusTimer.Start();
+    }
+
+    private static Visibility Visible(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
+    private void UpdateOptionsVisibility()
+    {
+        if (!IsVisible) return;
+        var point = Mouse.GetPosition(ImmersiveCanvas);
+        var top = point.X >= 0 && point.X <= ActualWidth && point.Y >= 0 && point.Y <= 120;
+        if (top || HasOpenMenu || (_optionsKeyboardInteraction && TopOptions.IsKeyboardFocusWithin) || TopOptions.IsMouseCaptureWithin || Mouse.LeftButton == MouseButtonState.Pressed)
+            ShowOptions();
+        else if (DateTime.UtcNow - _optionsInteractionAt > TimeSpan.FromSeconds(1.6)) SetOptionsVisible(false);
+    }
+    private void ShowOptions() { _optionsInteractionAt = DateTime.UtcNow; SetOptionsVisible(true); }
+    private void SetOptionsVisible(bool visible)
+    {
+        if (_optionsShown == visible) return;
+        _optionsShown = visible;
+        var previous = TopOptions.Opacity;
+        TopOptions.BeginAnimation(OpacityProperty, null);
+        TopOptions.Opacity = visible ? 1 : 0;
+        TopOptions.IsHitTestVisible = visible;
+        if (_appearance.AnimationsEnabled && SystemParameters.ClientAreaAnimation)
+            TopOptions.BeginAnimation(OpacityProperty, new DoubleAnimation(previous, visible ? 1 : 0, TimeSpan.FromMilliseconds(180)) { FillBehavior = FillBehavior.Stop });
     }
 
     private void ReadCoverColor(BitmapSource artwork)
@@ -253,4 +322,7 @@ public partial class ImmersivePlayerView : UserControl
     private void SpectrumSettings_Click(object sender, RoutedEventArgs e) => SpectrumSettingsRequested?.Invoke();
     private void ImportLyrics_Click(object sender, RoutedEventArgs e) { OptionsPopup.IsOpen = false; ImportLyricsRequested?.Invoke(); }
     private void DesktopLyrics_Click(object sender, RoutedEventArgs e) { OptionsPopup.IsOpen = false; DesktopLyricsRequested?.Invoke(); }
+    private void OffsetEarlier_Click(object sender, RoutedEventArgs e) => OffsetChangeRequested?.Invoke(-250);
+    private void OffsetLater_Click(object sender, RoutedEventArgs e) => OffsetChangeRequested?.Invoke(250);
+    private void OffsetReset_Click(object sender, RoutedEventArgs e) => OffsetResetRequested?.Invoke();
 }

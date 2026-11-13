@@ -47,7 +47,7 @@
  </UserControl.Resources>
  <Grid>
   <ScrollViewer x:Name="Scroller" CanContentScroll="False" HorizontalScrollBarVisibility="Disabled"
-                VerticalScrollBarVisibility="Auto" PanningMode="VerticalOnly" Focusable="False">
+                VerticalScrollBarVisibility="Hidden" PanningMode="VerticalOnly" Focusable="False">
    <ScrollViewer.OpacityMask>
     <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
      <GradientStop Color="#00FFFFFF" Offset="0"/><GradientStop Color="#FFFFFFFF" Offset="0.09"/>

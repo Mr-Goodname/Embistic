@@ -44,6 +44,8 @@ public partial class LyricAppearanceWindow : Window
         DesktopWeightCombo.ItemsSource = weights;
         LayoutCombo.ItemsSource = new[] { new Choice("Translation", "译文双行"), new Choice("NextLine", "当前句 + 下一句"), new Choice("Single", "只显示当前句") };
         AlignmentCombo.ItemsSource = new[] { new Choice("Left", "居左"), new Choice("Center", "居中"), new Choice("Right", "居右") };
+        DesktopMainAlignmentCombo.ItemsSource = DesktopSecondaryAlignmentCombo.ItemsSource = AlignmentCombo.ItemsSource;
+        SungOutlineStyleCombo.ItemsSource = UnsungOutlineStyleCombo.ItemsSource = new[] { new Choice("Round", "圆角描边"), new Choice("Bevel", "斜角描边"), new Choice("Miter", "尖角描边") };
         TransitionCombo.ItemsSource = new[] { new Choice("Slide", "轻滑与淡入"), new Choice("Fade", "柔和淡入"), new Choice("None", "直接切换") };
         foreach (var chip in new[] { CurrentColorChip, InactiveColorChip, TranslationColorChip, BackgroundColorChip, ShadowColorChip })
         {
@@ -117,7 +119,8 @@ public partial class LyricAppearanceWindow : Window
         var colors = new (string Label, string? Value)[]
         {
             ("当前歌词颜色", candidate.CurrentColor), ("未播放歌词颜色", candidate.InactiveColor),
-            ("翻译歌词颜色", candidate.TranslationColor), ("背景颜色", candidate.BackgroundColor), ("阴影颜色", candidate.ShadowColor)
+            ("翻译歌词颜色", candidate.TranslationColor), ("背景颜色", candidate.BackgroundColor), ("阴影颜色", candidate.ShadowColor),
+            ("已唱文字颜色", candidate.SungColor), ("未唱文字颜色", candidate.UnsungColor), ("已唱描边颜色", candidate.SungOutlineColor), ("未唱描边颜色", candidate.UnsungOutlineColor)
         };
         foreach (var (label, value) in colors)
         {
@@ -187,7 +190,7 @@ public partial class LyricAppearanceWindow : Window
         MainPreviousPreview.FontSize = MainNextPreview.FontSize = Math.Max(13, settings.MainFontSize * .7);
 
         DesktopPreviewSurface.Width = settings.DesktopWidth;
-        DesktopPreviewSurface.Background = Brush(settings.BackgroundColor, settings.BackgroundOpacity);
+        DesktopPreviewSurface.Background = settings.DesktopBackgroundEnabled ? Brush(settings.BackgroundColor, settings.BackgroundOpacity) : Brushes.Transparent;
         DesktopTrackPreview.Visibility = settings.ShowTrackInfo ? Visibility.Visible : Visibility.Collapsed;
         DesktopTrackPreview.TextAlignment = alignment;
         DesktopCurrentPreview.Text = primary;
@@ -199,11 +202,18 @@ public partial class LyricAppearanceWindow : Window
             line.FontWeight = FontWeight.FromOpenTypeWeight(settings.DesktopFontWeight);
             line.TextAlignment = alignment;
             line.Effect = CreateShadow(settings);
+            line.ApplyLyricsStyle(settings);
         }
         DesktopCurrentPreview.FontSize = settings.DesktopFontSize;
         DesktopSecondaryPreview.FontSize = settings.DesktopFontSize * settings.SecondaryScale;
-        DesktopCurrentPreview.Foreground = Brush(settings.CurrentColor);
-        DesktopSecondaryPreview.Foreground = Brush(settings.DesktopLayout == "NextLine" ? settings.InactiveColor : settings.TranslationColor);
+        DesktopCurrentPreview.TextAlignment = Alignment(settings.DesktopMainAlignment);
+        DesktopSecondaryPreview.TextAlignment = Alignment(settings.DesktopSecondaryAlignment);
+        DesktopCurrentPreview.Foreground = DesktopSecondaryPreview.Foreground = Brush(settings.UnsungColor);
+        DesktopCurrentPreview.SetLine(new LyricsLine(TimeSpan.Zero, primary) { Words = new[] { new LyricsWord(TimeSpan.Zero, TimeSpan.FromSeconds(2), primary) } }, primary);
+        var secondary = DesktopSecondaryPreview.Text;
+        DesktopSecondaryPreview.SetLine(new LyricsLine(TimeSpan.Zero, secondary) { Words = new[] { new LyricsWord(TimeSpan.Zero, TimeSpan.FromSeconds(2), secondary) } }, secondary);
+        DesktopCurrentPreview.UpdatePlayback(1100);
+        DesktopSecondaryPreview.UpdatePlayback(850);
         var alignmentLabel = settings.Alignment switch { "Left" => "居左", "Right" => "居右", _ => "居中" };
         var layoutLabel = settings.DesktopLayout switch { "Single" => "单行", "NextLine" => "当前句 + 下一句", _ => "译文双行" };
         DesktopPreviewCaption.Text = $"{settings.DesktopWidth:0} px · {alignmentLabel} · {layoutLabel}" + (settings.DesktopTopmost ? " · 置顶" : "");
@@ -230,7 +240,7 @@ public partial class LyricAppearanceWindow : Window
 
     private void StopPreviewAnimations(LyricAppearanceSettings settings)
     {
-        foreach (var line in new[] { MainCurrentPreview, DesktopCurrentPreview, DesktopSecondaryPreview })
+        foreach (var line in new UIElement[] { MainCurrentPreview, DesktopCurrentPreview, DesktopSecondaryPreview })
         {
             line.BeginAnimation(OpacityProperty, null);
             line.Opacity = 1;
@@ -255,7 +265,7 @@ public partial class LyricAppearanceWindow : Window
         if (!settings.AnimationsEnabled || settings.LyricTransition == "None") return;
         var duration = TimeSpan.FromMilliseconds(settings.TransitionDurationMs);
         var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
-        foreach (var line in new[] { MainCurrentPreview, DesktopCurrentPreview, DesktopSecondaryPreview })
+        foreach (var line in new UIElement[] { MainCurrentPreview, DesktopCurrentPreview, DesktopSecondaryPreview })
         {
             line.BeginAnimation(OpacityProperty, new DoubleAnimation(.05, 1, duration) { EasingFunction = easing, FillBehavior = FillBehavior.Stop });
             if (settings.LyricTransition == "Slide")
@@ -333,6 +343,7 @@ public partial class LyricAppearanceWindow : Window
         brush.Freeze();
         return brush;
     }
+    private static TextAlignment Alignment(string value) => value switch { "Left" => TextAlignment.Left, "Right" => TextAlignment.Right, _ => TextAlignment.Center };
 
     private static IEnumerable<T> FindChildren<T>(DependencyObject root) where T : DependencyObject
     {

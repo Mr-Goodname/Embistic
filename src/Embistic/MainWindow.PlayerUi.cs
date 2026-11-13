@@ -1,6 +1,9 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media.Animation;
+using System.Windows.Shell;
+using System.Windows.Threading;
 using Embistic.Models;
 using Embistic.Views;
 
@@ -12,6 +15,80 @@ public partial class MainWindow
     private ResizeMode _previousResizeMode;
     private WindowState _previousWindowState;
     private bool _fullscreen;
+    private readonly DispatcherTimer _chromeTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private DateTime _titleInteractionAt, _playerInteractionAt;
+    private bool _chromeInitialized, _immersiveChrome, _titleShown = true, _playerShown = true;
+    private bool _chromeKeyboardInteraction;
+
+    private void PlayerChrome_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (_chromeInitialized) return;
+        _chromeInitialized = true;
+        PreviewMouseMove += (_, _) => UpdateChromeFromPointer();
+        PreviewKeyDown += (_, _) => { _chromeKeyboardInteraction = true; ShowTitleChrome(); ShowPlayerChrome(); };
+        PreviewMouseDown += (_, _) => _chromeKeyboardInteraction = false;
+        OutputPopup.Child.PreviewMouseDown += (_, _) => _chromeKeyboardInteraction = false;
+        OutputPopup.Child.PreviewKeyDown += (_, _) => _chromeKeyboardInteraction = true;
+        StateChanged += (_, _) => UpdateCaptionState();
+        ImmersivePlayer.IsVisibleChanged += (_, _) => UpdateImmersiveChrome();
+        OutputPopup.Opened += (_, _) => ShowPlayerChrome();
+        _chromeTimer.Tick += (_, _) => UpdateChromeFromPointer();
+        Closed += (_, _) => _chromeTimer.Stop();
+        IsVisibleChanged += (_, _) => { if (IsVisible) UpdateImmersiveChrome(); else _chromeTimer.Stop(); };
+        UpdateImmersiveChrome(); UpdateCaptionState();
+    }
+
+    private void UpdateImmersiveChrome()
+    {
+        _immersiveChrome = ImmersivePlayer.Visibility == Visibility.Visible;
+        CaptionRow.Height = new GridLength(_immersiveChrome || _fullscreen ? 0 : 40);
+        ShowTitleChrome(); ShowPlayerChrome();
+        if (_immersiveChrome || _fullscreen) _chromeTimer.Start(); else _chromeTimer.Stop();
+    }
+
+    private void UpdateChromeFromPointer()
+    {
+        if (!_immersiveChrome && !_fullscreen) return;
+        var point = Mouse.GetPosition(WindowFrame);
+        var inside = point.X >= 0 && point.X <= WindowFrame.ActualWidth && point.Y >= 0 && point.Y <= WindowFrame.ActualHeight;
+        var pointerAtTop = inside && point.Y <= 112;
+        var pointerAtBottom = inside && point.Y >= WindowFrame.ActualHeight - 118;
+        var sharedInteraction = Mouse.LeftButton == MouseButtonState.Pressed || ImmersivePlayer.HasOpenMenu;
+        if (pointerAtTop || sharedInteraction || (_chromeKeyboardInteraction && TitleBar.IsKeyboardFocusWithin) || TitleBar.IsMouseCaptureWithin) ShowTitleChrome();
+        else if (DateTime.UtcNow - _titleInteractionAt > TimeSpan.FromSeconds(1.6)) SetChromeVisible(TitleBar, false, ref _titleShown);
+        if (!_immersiveChrome) { ShowPlayerChrome(); return; }
+        if (pointerAtBottom || sharedInteraction || OutputPopup.IsOpen || PlayerCoverMenu.IsOpen || (_chromeKeyboardInteraction && BottomPlayerBar.IsKeyboardFocusWithin) || BottomPlayerBar.IsMouseCaptureWithin) ShowPlayerChrome();
+        else if (DateTime.UtcNow - _playerInteractionAt > TimeSpan.FromSeconds(1.6)) SetChromeVisible(BottomPlayerBar, false, ref _playerShown);
+    }
+
+    private void ShowTitleChrome() { _titleInteractionAt = DateTime.UtcNow; SetChromeVisible(TitleBar, true, ref _titleShown); }
+    private void ShowPlayerChrome() { _playerInteractionAt = DateTime.UtcNow; SetChromeVisible(BottomPlayerBar, true, ref _playerShown); }
+    private void SetChromeVisible(FrameworkElement element, bool visible, ref bool state)
+    {
+        if (state == visible) return;
+        state = visible;
+        var previous = element.Opacity;
+        element.BeginAnimation(OpacityProperty, null);
+        element.Opacity = visible ? 1 : 0;
+        element.IsHitTestVisible = visible;
+        if (_appearance.AnimationsEnabled && SystemParameters.ClientAreaAnimation)
+            element.BeginAnimation(OpacityProperty, new DoubleAnimation(previous, visible ? 1 : 0, TimeSpan.FromMilliseconds(180)) { FillBehavior = FillBehavior.Stop });
+    }
+
+    private void UpdateCaptionState()
+    {
+        TitleMaximizeButton.Content = WindowState == WindowState.Maximized ? "\uE923" : "\uE922";
+        TitleMaximizeButton.ToolTip = WindowState == WindowState.Maximized ? "还原" : "最大化";
+        WindowFrame.Margin = !_fullscreen && WindowState == WindowState.Maximized ? new Thickness(7) : new Thickness(0);
+    }
+    private void TitleMinimize_Click(object sender, RoutedEventArgs e) => SystemCommands.MinimizeWindow(this);
+    private void TitleMaximize_Click(object sender, RoutedEventArgs e)
+    {
+        if (_fullscreen) ToggleFullscreen();
+        if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this); else SystemCommands.MaximizeWindow(this);
+    }
+    private void TitleClose_Click(object sender, RoutedEventArgs e) => Close();
+    private void TitleFullscreen_Click(object sender, RoutedEventArgs e) => ToggleFullscreen();
     private void ToggleFullscreen()
     {
         if (!_fullscreen)
@@ -21,6 +98,11 @@ public partial class MainWindow
         }
         else { WindowState = WindowState.Normal; WindowStyle = _previousWindowStyle; ResizeMode = _previousResizeMode; WindowState = _previousWindowState; }
         _fullscreen = !_fullscreen;
+        var chrome = WindowChrome.GetWindowChrome(this);
+        chrome.CaptionHeight = _fullscreen ? 0 : 40;
+        chrome.ResizeBorderThickness = new Thickness(_fullscreen ? 0 : 7);
+        TitleFullscreenButton.Content = _fullscreen ? "\uE73F" : "\uE740";
+        UpdateImmersiveChrome(); UpdateCaptionState();
     }
     private void PlayerCover_Click(object sender, RoutedEventArgs e) => ShowPage("lyrics");
     private async Task DiscoverPopupDevicesAsync()
@@ -70,6 +152,7 @@ public partial class MainWindow
         AddMenu(menu, "转到艺术家", async () => { if(_emby is null)return; var artists=await _emby.GetArtistsAsync();var item=artists.FirstOrDefault(a=>string.Equals(a.Name,track.Artist,StringComparison.CurrentCultureIgnoreCase));if(item is not null)ShowCollection(await _emby.GetLibraryItemTracksAsync(item),item.Name,"艺术家");else{SearchBox.Text=track.Artist;await ApplySearchAsync();} });
         AddMenu(menu, "歌词", () => { ShowPage("lyrics"); return Task.CompletedTask; });
         AddMenu(menu, "下载到此电脑", DownloadCurrentAsync);
+        if (!_downloadTask.IsCompleted) AddMenu(menu, "取消下载", () => { CancelDownload(); return Task.CompletedTask; });
         AddMenu(menu, "歌曲信息", () => { MessageBox.Show(this, $"{track.Title}\n{track.Artist}\n{track.Album}\n\n{track.QualityText}\n时长 {track.DurationText}", "歌曲信息"); return Task.CompletedTask; });
     }
     private void AddMenu(ContextMenu menu, string label, Func<Task> action)

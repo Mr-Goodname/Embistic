@@ -86,5 +86,13 @@ public static class SettingsService
         settings.LoginMode = settings.LoginMode == "Password" ? "Password" : "ApiKey";
         settings.Display ??= new DisplaySettings();
         settings.Display.Normalize();
+        settings.DownloadDirectory = (settings.DownloadDirectory ?? "").Trim();
+        if (settings.DownloadDirectory.Length > 0)
+        {
+            try { settings.DownloadDirectory = Path.GetFullPath(settings.DownloadDirectory); }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { settings.DownloadDirectory = ""; }
+        }
+        settings.LyricsSources = (settings.LyricsSources ?? new()).Where(source => source is not null).Take(16).ToList();
+        foreach (var source in settings.LyricsSources) source.Normalize();
     }
 }

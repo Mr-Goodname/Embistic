@@ -10,6 +10,18 @@ Check(multi.Lines[0].Time.TotalMilliseconds == 2250, "LRC file offset and two-di
 Check(multi.Lines[0].Text == "repeat\n翻译", "Simultaneous translation retained");
 Check(multi.Lines[1].Time.TotalMilliseconds == 9875, "Three-digit fractional time");
 Check(multi.Lines[2].Text == "word timed", "Enhanced LRC timestamps stripped for line display");
+Check(multi.Lines[2].Words.Count == 2 && multi.Lines[2].Words[0].Start.TotalMilliseconds == 11850 && multi.Lines[2].Words[0].End.TotalMilliseconds == 12250,
+    "Enhanced LRC preserves the actual absolute word times and file offset");
+Check(multi.Lines[0].Words.Count == 0, "Standard LRC does not fabricate word timing");
+var enhanced = LyricsService.ParseLrc("[00:01]<00:01.100>你<00:01.850>好<00:02.400>\n[00:01]Hello");
+Check(enhanced.Lines[0].Words[1].TextIndex == 1 && enhanced.Lines[0].Words[1].End.TotalMilliseconds == 2400 && enhanced.Lines[0].EndTime?.TotalMilliseconds == 2400,
+    "Enhanced LRC closing timestamp and translated line retain character ranges");
+var yrc = LyricsService.ParseLrc("[1000,1600](1000,400,0)你(1400,1200,0)好");
+Check(yrc.Lines[0].Text == "你好" && yrc.Lines[0].Words[1].Start.TotalMilliseconds == 1400 && yrc.Lines[0].Words[1].End.TotalMilliseconds == 2600, "YRC preserves uneven per-word durations");
+var qrc = LyricsService.ParseLrc("<QrcInfos><LyricInfo LyricContent=\"[1000,1600]你(1000,400)好(1400,1200)\"/></QrcInfos>");
+Check(qrc.Lines[0].Text == "你好" && qrc.Lines[0].Words[0].End.TotalMilliseconds == 1400, "QRC XML lyric content and suffix timings parse");
+var ttml = LyricsService.ParseLrc("<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"1s\" end=\"3s\"><span begin=\"1s\" end=\"1.4s\">你</span><span begin=\"1.4s\" dur=\"1.6s\">好</span></p></div></body></tt>");
+Check(ttml.Lines[0].Text == "你好" && ttml.Lines[0].Words.Count == 2 && ttml.Lines[0].Words[1].End.TotalMilliseconds == 3000, "TTML namespace, span begin/end and duration parse");
 Check(!multi.PlainText.Contains("Artist"), "Metadata removed from lyrics");
 Check(LyricsService.FindLineIndex(multi, 2000) == -1, "Before first lyric");
 Check(LyricsService.FindLineIndex(multi, 2000, 250) == 0, "Manual advance offset");

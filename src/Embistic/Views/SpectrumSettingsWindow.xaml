@@ -20,7 +20,13 @@
   <Border Grid.Row="1" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="14" Padding="17" Margin="0,0,0,18">
    <StackPanel>
     <DockPanel Margin="0,0,0,12"><CheckBox x:Name="PreviewEnabledBox" DockPanel.Dock="Right" Content="演示响应" IsChecked="True" Click="PreviewEnabled_Click" Margin="0"/><TextBlock Text="设置预览 · 合成测试信号，不代表当前播放音频" Foreground="{DynamicResource Muted}" FontSize="12" TextWrapping="Wrap"/></DockPanel>
-    <controls:SpectrumView x:Name="PreviewSpectrum" Height="105" IsPlaying="True"/>
+    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+     <controls:SpectrumView x:Name="PreviewSpectrum" Height="105" IsPlaying="True"/>
+     <Grid x:Name="RingPreview" Grid.Column="1" Width="150" Height="150" Margin="18,0,0,0" Visibility="Collapsed">
+      <Border Width="100" Height="100" CornerRadius="50" Background="{DynamicResource Raised}" BorderBrush="{DynamicResource Line}" BorderThickness="1"><TextBlock Text="♫" FontSize="32" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource Muted}"/></Border>
+      <controls:SpectrumView x:Name="PreviewRingSpectrum" IsRadial="True" IsPlaying="True"/>
+     </Grid>
+    </Grid>
    </StackPanel>
   </Border>
   <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>

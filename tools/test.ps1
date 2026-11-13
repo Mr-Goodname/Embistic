@@ -5,12 +5,15 @@ $projects = @(
     'auth/AuthChecks.csproj',
     'updates/UpdateChecks.csproj',
     'library/LibraryChecks.csproj',
+    'network-cache/NetworkCacheChecks.csproj',
     'lyrics/LyricsTests.csproj',
     'dlna/DlnaChecks.csproj',
     'appearance/AppearanceTests.csproj',
     'animated-lyrics/AnimatedLyricsChecks.csproj',
     'theme/ThemeChecks.csproj',
     'spectrum/SpectrumChecks.csproj',
+    'sliders/SliderChecks.csproj',
+    'background/BackgroundChecks.csproj',
     'integration/IntegrationChecks.csproj'
 )
 if ($IncludeMedia) { $projects += 'media/MediaSmoke.csproj' }

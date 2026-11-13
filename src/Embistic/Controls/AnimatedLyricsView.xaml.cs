@@ -31,6 +31,10 @@ public partial class AnimatedLyricsView : UserControl
     private long _positionMs, _lastMotionAt, _manualInputAt, _lastActivationAt;
     private bool _hasPosition, _manualScrolling, _layoutScheduled;
     private double _offsetMs, _targetScrollOffset;
+    private readonly LyricPlaybackClock _clock = new();
+    private bool _renderAttached, _scrollMoving;
+    private long _scrollStarted;
+    private double _scrollFrom, _scrollDuration;
 
     public event Action<long>? SeekRequested;
     public IReadOnlyList<LyricsLine> Lines => _document.Lines;
@@ -43,12 +47,12 @@ public partial class AnimatedLyricsView : UserControl
     {
         InitializeComponent();
         _followTimer.Tick += FollowTimer_Tick;
-        Loaded += (_, _) => ScheduleLayoutFollow();
-        Unloaded += (_, _) => StopMotion();
+        Loaded += (_, _) => { StartRendering(); ScheduleLayoutFollow(); };
+        Unloaded += (_, _) => { StopMotion(); StopRendering(); };
         IsVisibleChanged += (_, _) =>
         {
-            if (IsVisible) ScheduleLayoutFollow();
-            else StopMotion();
+            if (IsVisible) { StartRendering(); ScheduleLayoutFollow(); }
+            else { StopMotion(); StopRendering(); }
         };
         SizeChanged += (_, _) => ScheduleLayoutFollow();
         Scroller.ScrollChanged += (_, e) =>
@@ -70,6 +74,7 @@ public partial class AnimatedLyricsView : UserControl
         if (ReferenceEquals(document, _document)) return;
         StopMotion();
         _document = document;
+        _clock.Update(0, false, forceRebase: true);
         _activeIndex = -1;
         _lastActivationIndex = -1;
         _lastActivationAt = 0;
@@ -96,17 +101,37 @@ public partial class AnimatedLyricsView : UserControl
 
     public void UpdatePosition(long positionMs, double offsetMs = 0)
     {
+        _clock.Update(positionMs, false);
+        UpdatePositionCore(positionMs, offsetMs);
+    }
+
+    public void UpdatePlayback(long positionMs, bool playing, double offsetMs = 0, bool forceRebase = false)
+    {
+        _clock.Update(positionMs, playing, forceRebase);
+        UpdatePositionCore((long)_clock.PositionMs, offsetMs);
+        if (IsLoaded && IsVisible) StartRendering();
+    }
+
+    public double InterpolatedPositionMs => _clock.PositionMs;
+
+    private void UpdatePositionCore(long positionMs, double offsetMs)
+    {
         if (_hasPosition && positionMs != _positionMs) _lastMotionAt = Stopwatch.GetTimestamp();
         _positionMs = positionMs;
         _offsetMs = double.IsFinite(offsetMs) ? offsetMs : 0;
         _hasPosition = true;
         if (_manualScrolling && ManualWaitElapsed() && PlaybackIsAdvancing() && !IsScrollBarInput(Mouse.Captured as DependencyObject)) ResumeFollow();
         var index = _document.IsSynced ? LyricsService.FindLineIndex(_document, positionMs, _offsetMs) : -1;
-        if (index == _activeIndex) return;
+        if (index == _activeIndex)
+        {
+            if (index >= 0 && index < _rows.Count) _rows[index].Main.UpdatePlayback(positionMs + _offsetMs);
+            return;
+        }
         var previous = _activeIndex;
         _activeIndex = index;
-        if (previous >= 0 && previous < _rows.Count) ApplyFocus(_rows[previous], false, CanAnimate(_rows[previous]));
-        if (index >= 0 && index < _rows.Count) ApplyFocus(_rows[index], true, CanAnimate(_rows[index]));
+        for (var rowIndex = 0; rowIndex < _rows.Count; rowIndex++)
+            ApplyFocus(_rows[rowIndex], rowIndex == index, CanAnimate(_rows[rowIndex]));
+        if (index >= 0 && index < _rows.Count) _rows[index].Main.UpdatePlayback(positionMs + _offsetMs);
         if (!_manualScrolling && IsVisible) CenterActiveLine(true);
     }
 
@@ -133,7 +158,8 @@ public partial class AnimatedLyricsView : UserControl
     private LineVisual BuildRow(LyricsLine line, int index)
     {
         var parts = line.Text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
-        var main = new TextBlock { Text = string.IsNullOrWhiteSpace(parts[0]) ? "♪" : parts[0], TextWrapping = TextWrapping.Wrap, LineStackingStrategy = LineStackingStrategy.BlockLineHeight };
+        var main = new OutlinedLyricsText { TextWrapping = TextWrapping.Wrap };
+        main.SetLine(line, string.IsNullOrWhiteSpace(parts[0]) ? "♪" : parts[0]);
         var translation = new TextBlock
         {
             Text = string.Join('\n', parts.Skip(1)), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 7, 0, 0),
@@ -170,25 +196,28 @@ public partial class AnimatedLyricsView : UserControl
     {
         var alignment = _appearance.Alignment switch { "Left" => TextAlignment.Left, "Right" => TextAlignment.Right, _ => TextAlignment.Center };
         row.Main.FontFamily = row.Translation.FontFamily = new FontFamily(_appearance.FontFamily);
+        row.Main.ApplyLyricsStyle(_appearance);
         row.Main.FontSize = _appearance.MainFontSize;
         row.Main.FontWeight = FontWeight.FromOpenTypeWeight(_appearance.MainFontWeight);
         row.Main.LineHeight = _appearance.MainFontSize * 1.48;
         row.Translation.FontSize = Math.Max(11, _appearance.MainFontSize * _appearance.SecondaryScale);
         row.Translation.FontWeight = FontWeights.Normal;
         row.Translation.LineHeight = row.Translation.FontSize * 1.58;
-        row.Main.TextAlignment = row.Translation.TextAlignment = alignment;
+        row.Main.TextAlignment = alignment;
+        row.Translation.TextAlignment = alignment;
         row.Content.RenderTransformOrigin = new Point(alignment == TextAlignment.Left ? 0 : alignment == TextAlignment.Right ? 1 : .5, .5);
     }
 
     private void ApplyFocus(LineVisual row, bool active, bool animate)
     {
+        row.Main.KaraokeEnabled = active;
         var duration = TimeSpan.FromMilliseconds(_appearance.TransitionDurationMs);
-        var color = active ? _currentColor : _inactiveColor;
+        var color = active ? row.Main.Words.Count > 0 ? ParseColor(_appearance.UnsungColor, _currentColor) : _currentColor : _inactiveColor;
         AnimateColor(row.MainBrush, color, duration, animate);
         AnimateColor(row.TranslationBrush, _translationColor, duration, animate);
         AnimateDouble(row.Main, OpacityProperty, active ? 1 : .72, duration, animate);
         AnimateDouble(row.Translation, OpacityProperty, active ? .9 : .55, duration, animate);
-        var scale = active ? _appearance.MainFocusScale : 1;
+        var scale = _activeIndex < 0 ? 1 : LyricScrollMath.FocusScale(_rows.IndexOf(row) - _activeIndex, _appearance.MainFocusScale);
         AnimateDouble(row.Scale, ScaleTransform.ScaleXProperty, scale, duration, animate);
         AnimateDouble(row.Scale, ScaleTransform.ScaleYProperty, scale, duration, animate);
         row.Slide.BeginAnimation(TranslateTransform.YProperty, null);
@@ -247,23 +276,17 @@ public partial class AnimatedLyricsView : UserControl
             Scroller.ScrollToVerticalOffset(target);
             return;
         }
-        var version = _scrollVersion;
-        var animation = new DoubleAnimation(current, target, TimeSpan.FromMilliseconds(durationMs ?? _appearance.ScrollDurationMs)) { EasingFunction = Ease(), FillBehavior = FillBehavior.Stop };
-        animation.Completed += (_, _) =>
-        {
-            if (version != _scrollVersion) return;
-            SetValue(AnimatedOffsetProperty, target);
-            BeginAnimation(AnimatedOffsetProperty, null);
-            Scroller.ScrollToVerticalOffset(target);
-        };
-        // Set the final base value only after starting the clock, avoiding an initial target jump.
-        BeginAnimation(AnimatedOffsetProperty, animation, HandoffBehavior.SnapshotAndReplace);
-        SetValue(AnimatedOffsetProperty, target);
+        _scrollFrom = current;
+        _scrollDuration = durationMs ?? _appearance.ScrollDurationMs;
+        _scrollStarted = Stopwatch.GetTimestamp();
+        _scrollMoving = true;
+        StartRendering();
     }
 
     private void StopScroll()
     {
         _scrollVersion++;
+        _scrollMoving = false;
         var current = Scroller.VerticalOffset;
         SetValue(AnimatedOffsetProperty, current);
         BeginAnimation(AnimatedOffsetProperty, null);
@@ -296,7 +319,7 @@ public partial class AnimatedLyricsView : UserControl
     }
 
     private bool ManualWaitElapsed() => _manualInputAt != 0 && Stopwatch.GetElapsedTime(_manualInputAt) >= TimeSpan.FromSeconds(5);
-    private bool PlaybackIsAdvancing() => _lastMotionAt != 0 && Stopwatch.GetElapsedTime(_lastMotionAt) < TimeSpan.FromSeconds(1.2);
+    private bool PlaybackIsAdvancing() => _clock.IsPlaying || (_lastMotionAt != 0 && Stopwatch.GetElapsedTime(_lastMotionAt) < TimeSpan.FromSeconds(1.2));
     private void FollowTimer_Tick(object? sender, EventArgs args)
     {
         _followTimer.Stop();
@@ -351,6 +374,28 @@ public partial class AnimatedLyricsView : UserControl
         for (var index = 0; index < _rows.Count; index++) ApplyFocus(_rows[index], index == _activeIndex, false);
     }
 
+    private void StartRendering()
+    {
+        if (_renderAttached || !IsLoaded || !IsVisible) return;
+        CompositionTarget.Rendering += RenderFrame;
+        _renderAttached = true;
+    }
+    private void StopRendering()
+    {
+        if (!_renderAttached) return;
+        CompositionTarget.Rendering -= RenderFrame;
+        _renderAttached = false;
+    }
+    private void RenderFrame(object? sender, EventArgs args)
+    {
+        if (_clock.IsPlaying) UpdatePositionCore((long)_clock.PositionMs, _offsetMs);
+        if (!_scrollMoving) return;
+        var progress = Stopwatch.GetElapsedTime(_scrollStarted).TotalMilliseconds / _scrollDuration;
+        var value = _scrollFrom + (_targetScrollOffset - _scrollFrom) * LyricScrollMath.EaseOut(progress);
+        Scroller.ScrollToVerticalOffset(value);
+        if (progress >= 1) _scrollMoving = false;
+    }
+
     private static bool IsScrollBarInput(DependencyObject? source)
     {
         while (source is not null)
@@ -386,13 +431,13 @@ public partial class AnimatedLyricsView : UserControl
     {
         public Button Button { get; }
         public StackPanel Content { get; }
-        public TextBlock Main { get; }
+        public OutlinedLyricsText Main { get; }
         public TextBlock Translation { get; }
         public ScaleTransform Scale { get; }
         public TranslateTransform Slide { get; }
         public SolidColorBrush MainBrush { get; } = new();
         public SolidColorBrush TranslationBrush { get; } = new();
-        public LineVisual(Button button, StackPanel content, TextBlock main, TextBlock translation, ScaleTransform scale, TranslateTransform slide)
+        public LineVisual(Button button, StackPanel content, OutlinedLyricsText main, TextBlock translation, ScaleTransform scale, TranslateTransform slide)
         {
             Button = button; Content = content; Main = main; Translation = translation; Scale = scale; Slide = slide;
             Main.Foreground = MainBrush; Translation.Foreground = TranslationBrush;

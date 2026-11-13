@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Controls;
@@ -9,6 +10,9 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.Windows.Markup;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Shell;
 using System.Xml.Linq;
 using Embistic;
 using Embistic.Controls;
@@ -27,6 +31,7 @@ internal static class Program
         var projectRoot = FindProjectRoot();
         var settingsBefore = SettingsFingerprint();
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(app.Dispatcher));
         // Load the production resource definitions without executing App.OnStartup
         // or acquiring the user's single-instance mutex.
         var appXaml = XElement.Load(Path.Combine(projectRoot, "src", "Embistic", "App.xaml"));
@@ -35,9 +40,12 @@ internal static class Program
             new XAttribute("xmlns", presentation.NamespaceName),
             new XAttribute(XNamespace.Xmlns + "x", "http://schemas.microsoft.com/winfx/2006/xaml"),
             new XAttribute(XNamespace.Xmlns + "local", "clr-namespace:Embistic;assembly=Embistic"),
+            new XAttribute(XNamespace.Xmlns + "controls", "clr-namespace:Embistic.Controls;assembly=Embistic"),
             appXaml.Element(presentation + "Application.Resources")!.Elements());
         foreach (var element in resources.Descendants().Where(element => element.Name.NamespaceName == "clr-namespace:Embistic"))
             element.Name = XName.Get(element.Name.LocalName, "clr-namespace:Embistic;assembly=Embistic");
+        foreach (var element in resources.Descendants().Where(element => element.Name.NamespaceName == "clr-namespace:Embistic.Controls"))
+            element.Name = XName.Get(element.Name.LocalName, "clr-namespace:Embistic.Controls;assembly=Embistic");
         app.Resources = (ResourceDictionary)XamlReader.Parse(resources.ToString());
         MainWindow? window = null;
         try
@@ -46,7 +54,9 @@ internal static class Program
             // Exercise the real view and event wiring without starting playback, connecting,
             // checking for updates, opening desktop lyrics, or saving the user's preferences.
             window.Loaded -= (RoutedEventHandler)Method(window, "Window_Loaded").CreateDelegate(typeof(RoutedEventHandler), window);
+            window.SourceInitialized -= (EventHandler)Method(window, "Window_SourceInitialized").CreateDelegate(typeof(EventHandler), window);
             StopTimers(window);
+            Set(window, "_saveSettings", new Action<AppSettings>(_ => { }));
             Set(window, "_history", null);
             (Get<object?>(window, "_downloads") as IDisposable)?.Dispose();
             Set(window, "_downloads", null);
@@ -86,6 +96,21 @@ internal static class Program
             Pump();
             Check(!Get<bool>(window, "_ready") && Get<object?>(window, "_player") is null && Get<object?>(window, "_emby") is null,
                 "Fixture window never initializes audio or an Emby connection");
+            Check(window.WindowStyle == WindowStyle.None && WindowChrome.GetWindowChrome(window) is { CaptionHeight: 40 }
+                && Get<object?>(window, "_tray") is null, "Custom caption preserves WindowChrome while fixture never creates a tray icon");
+            var captionPoint = window.PointToScreen(new Point(180, 20));
+            Check(NativeHitTest(window, captionPoint) == 2 && NativeHitTest(window, window.PointToScreen(new Point(1, 200))) == 10,
+                "Custom title and edge retain native caption drag/snap and resize hit testing");
+            SendMessage(new WindowInteropHelper(window).Handle, 0xA3, new IntPtr(2), NativePoint(captionPoint)); Pump();
+            Check(window.WindowState == WindowState.Maximized, "Native caption double-click maximizes the custom window");
+            Click(window, "TitleMaximizeButton"); Pump();
+            Click(window, "TitleFullscreenButton"); Pump();
+            Check(window.WindowState == WindowState.Maximized && window.ResizeMode == ResizeMode.NoResize
+                && WindowChrome.GetWindowChrome(window).CaptionHeight == 0, "Fullscreen caption button removes dragging and resize borders");
+            Console.WriteLine($"Fullscreen window: {window.ActualWidth}×{window.ActualHeight}; primary screen: {SystemParameters.PrimaryScreenWidth}×{SystemParameters.PrimaryScreenHeight}");
+            Click(window, "TitleFullscreenButton"); Pump();
+            Check(window.WindowStyle == WindowStyle.None && window.ResizeMode == ResizeMode.CanResize && window.WindowState == WindowState.Normal,
+                "Leaving fullscreen restores the resizable custom caption");
 
             var coversDirectory = Path.Combine(projectRoot, "artifacts", "integration", "covers");
             var albums = CreateAlbums(coversDirectory);
@@ -107,6 +132,54 @@ internal static class Program
             Check(Get<string>(window, "_section") == "lyrics" && immersive.IsVisible,
                 "Clicking the bottom cover opens immersive lyrics");
             Check(Get<bool>(immersive, "_playing"), "Root playback state reaches the immersive view");
+            Check(Find<Grid>(window, "WindowFrame").RowDefinitions[0].ActualHeight == 0
+                && Grid.GetRowSpan(immersive) == 2, "Immersive canvas uses the title and bottom-player space");
+            Pump(1950);
+            Check(Find<Grid>(immersive, "TopOptions").Opacity == 0 && Find<Border>(window, "BottomPlayerBar").Opacity == 0
+                && Find<Border>(window, "TitleBar").Opacity == 0, "Idle immersive options, title and player controls hide automatically");
+            var options = Find<Popup>(immersive, "OptionsPopup");
+            options.Child.Opacity = 0;
+            Click(immersive, "OptionsButton"); Pump(1900);
+            Check(options.IsOpen && Find<Grid>(immersive, "TopOptions").Opacity == 1
+                && Find<Border>(window, "BottomPlayerBar").Opacity == 1, "Open lyrics popup keeps immersive controls visible");
+            Click(immersive, "OptionsButton");
+            var playButton = Find<Button>(window, "PlayPauseButton");
+            Keyboard.Focus(playButton);
+            playButton.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(window), Environment.TickCount, Key.Tab)
+                { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+            Pump(1900);
+            Check(playButton.IsKeyboardFocused && Find<Border>(window, "BottomPlayerBar").Opacity == 1,
+                "Keyboard navigation keeps the focused playback controls visible");
+            window.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
+                { RoutedEvent = Mouse.PreviewMouseDownEvent });
+            Pump(1900);
+            Check(playButton.IsKeyboardFocused && Find<Border>(window, "BottomPlayerBar").Opacity == 0,
+                "Mouse interaction lets controls hide even when a button retains keyboard focus");
+            Keyboard.ClearFocus();
+
+            var spectrumSettings = new SpectrumSettings { Enabled = true, ShowTop = true, ShowBottom = true, ShowLeft = true, ShowRight = true, ShowRing = true };
+            immersive.ApplySpectrum(spectrumSettings); immersive.SetSpectrumPlaying(true); Pump();
+            var spectra = new[] { immersive.Spectrum, Find<SpectrumView>(immersive, "SpectrumTop"), Find<SpectrumView>(immersive, "SpectrumLeft"),
+                Find<SpectrumView>(immersive, "SpectrumRight"), Find<SpectrumView>(immersive, "SpectrumRing") };
+            var bins = Enumerable.Repeat(.18f, 1025).ToArray();
+            var beforeFrames = spectra.Select(view => view.RenderedFrameCount).ToArray();
+            Task.Run(() => immersive.SetSpectrum(bins, 48000)).GetAwaiter().GetResult(); Pump(150);
+            Check(spectra.Select((view, index) => view.IsVisible && view.RenderedFrameCount > beforeFrames[index]).All(value => value),
+                "Capture-thread spectrum frames reach all four edges and the cover ring");
+            var ring = spectra[4]; var artwork = Find<System.Windows.Shapes.Ellipse>(immersive, "AlbumArtwork");
+            Check(ring.IsRadial && Math.Abs(ring.ActualWidth - ring.ActualHeight) < .01
+                && Math.Abs(artwork.Width / ring.ActualWidth - .7) < .01, "Cover ring is square with the album artwork at seventy percent diameter");
+            Check(spectra[2].ActualWidth > immersive.ActualHeight * .8 && spectra[3].ActualWidth > immersive.ActualHeight * .8,
+                "Side spectra span the height of the immersive canvas");
+            immersive.ApplySpectrum(new SpectrumSettings { ShowTop = false, ShowBottom = false, ShowLeft = false, ShowRight = false, ShowRing = true }); Pump();
+            Check(ring.IsVisible && spectra.Take(4).All(view => !view.IsVisible), "Ring-only selection hides every edge spectrum");
+            immersive.ApplySpectrum(settings.Spectrum); immersive.SetSpectrumPlaying(false);
+            immersive.SetSpectrumStatus("Fixture spectrum status");
+            Check(Find<Border>(immersive, "SpectrumStatusSurface").Visibility == Visibility.Visible, "New spectrum status is briefly displayed");
+            Pump(3200);
+            immersive.SetSpectrumStatus("Fixture spectrum status");
+            Check(Find<Border>(immersive, "SpectrumStatusSurface").Visibility == Visibility.Collapsed, "Spectrum status disappears after three seconds without repeating unchanged text");
+            immersive.SetSpectrumStatus("");
 
             var lines = new[]
             {
@@ -129,6 +202,7 @@ internal static class Program
             Set(window, "_playing", false); Invoke(window, "NotifyNowPlaying");
             Check(!Get<bool>(immersive, "_playing") && !immersive.Spectrum.IsPlaying,
                 "Pausing stops immersive playback and spectrum drawing");
+            CheckSeekEventWiring(window, immersive, track);
 
             var sectionBeforePopup = Get<string>(window, "_section");
             Click(window, "OutputButton");
@@ -228,14 +302,14 @@ internal static class Program
         Click(window, "PlayerCoverButton"); Pump(100);
         var immersive = Find<ImmersivePlayerView>(window, "ImmersivePlayer");
         Invoke(window, "Timer_Tick", null, EventArgs.Empty);
-        var spectrum = immersive.Spectrum;
-        spectrum.IsPlaying = true;
+        immersive.ApplySpectrum(new SpectrumSettings { ShowRing = true, ShowBottom = true });
+        immersive.SetSpectrumPlaying(true);
+        Find<System.Windows.Media.RotateTransform>(immersive, "DiscRotation").Angle = 0;
         var bins = Enumerable.Range(0, 1024).Select(index => (float)(.35 * Math.Exp(-index / 600.0) * (.15 + .85 * Math.Pow(Math.Sin(index / 27.0), 2)))).ToArray();
-        for (var frame = 0; frame < 10; frame++) { spectrum.SetSpectrum(bins, 48000); Pump(35); }
-        immersive.SetSpectrumStatus("界面演示 · 原创示例歌词 · 频谱使用合成测试信号");
-        Pump(80);
+        for (var frame = 0; frame < 58; frame++) { immersive.SetSpectrum(bins, 48000); Pump(40); }
+        immersive.SetSpectrumStatus("");
         Render((FrameworkElement)window.Content, Path.Combine(directory, "lyrics.png"));
-        spectrum.IsPlaying = false;
+        immersive.SetSpectrumPlaying(false);
         Console.WriteLine("Documentation screenshots: " + directory);
     }
 
@@ -302,6 +376,104 @@ internal static class Program
     }
     private static string SettingsFingerprint() => File.Exists(SettingsService.SettingsPath)
         ? Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(SettingsService.SettingsPath))) : "missing";
+    private static void CheckSeekEventWiring(MainWindow window, ImmersivePlayerView immersive, Track track)
+    {
+        var slider = Find<Slider>(window, "SeekBar");
+        var originalMoveToPoint = slider.IsMoveToPointEnabled;
+        var originalPosition = Get<long>(window, "_position");
+        var originalDuration = Get<long>(window, "_duration");
+        var originalVersion = Get<int>(window, "_playVersion");
+        var originalRenderer = Get<object?>(window, "_renderer");
+        var labels = 0;
+        System.ComponentModel.PropertyChangedEventHandler labelChanged = (_, e) => { if (e.PropertyName == nameof(MainWindow.PositionLabel)) labels++; };
+        window.PropertyChanged += labelChanged;
+        // Standalone slider checks cover pointer coordinates and real dragging.
+        // Here handled routed events exercise Root's event subscriptions without
+        // capturing the user's mouse or invoking move-to-point input.
+        slider.IsMoveToPointEnabled = false;
+        try
+        {
+            Set(window, "_duration", 100000L); Set(window, "_position", 10000L);
+            slider.Value = 20;
+            slider.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
+                { RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent, Handled = true });
+            Check(Get<bool>(window, "_seeking"), "Handled slider presses reach the main-window seek subscription");
+            slider.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
+                { RoutedEvent = UIElement.PreviewMouseLeftButtonUpEvent, Handled = true });
+            Check(Get<bool>(window, "_seekReleasePending") && Get<long>(window, "_position") == 10000,
+                "Slider release waits for remaining input handlers before committing a seek");
+            slider.Value = 65;
+            PumpUntil(() => !Get<bool>(window, "_seekReleasePending"));
+            Check(Get<long>(window, "_position") == 65000 && !Get<bool>(window, "_seeking") && slider.Value == 65,
+                "Deferred release reads the slider's final value instead of its earlier release value");
+            Check(window.PositionLabel == "1:05" && labels > 0 && immersive.LyricsView.InterpolatedPositionMs == 65000
+                && immersive.LyricsView.ActiveLineIndex == 5, "Committed seek immediately refreshes progress text and rebases the lyric clock");
+
+            slider.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
+                { RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent, Handled = true });
+            slider.Value = 80;
+            slider.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount)
+                { RoutedEvent = Mouse.LostMouseCaptureEvent });
+            PumpUntil(() => !Get<bool>(window, "_seeking"));
+            Check(!Get<bool>(window, "_seekReleasePending") && Get<long>(window, "_position") == 65000
+                && immersive.LyricsView.InterpolatedPositionMs == 65000 && slider.Value == 80,
+                "External capture loss ends dragging without submitting the unfinished slider value");
+
+            var gate = Get<SemaphoreSlim>(window, "_transportGate");
+            foreach (var invalidation in new[] { "playback version", "current track", "output renderer" })
+            {
+                Set(window, "_playVersion", originalVersion); Set(window, "_renderer", null); SetCurrent(window, track);
+                Set(window, "_duration", 100000L); Set(window, "_position", 31000L); slider.Value = 31;
+                immersive.LyricsView.UpdatePlayback(31000, false, forceRebase: true);
+                Check(gate.Wait(0), "Fixture acquires the transport gate before a delayed " + invalidation + " seek");
+                Task pending;
+                try
+                {
+                    pending = (Task)Invoke(window, "SeekAsync", 72000L)!;
+                    Check(!pending.IsCompleted && Get<long>(window, "_position") == 31000,
+                        "Seek waits for transport ownership before changing playback state: " + invalidation);
+                    if (invalidation == "playback version") Set(window, "_playVersion", originalVersion + 1);
+                    else if (invalidation == "current track") SetCurrent(window, new Track { Id = "seek-replacement", Title = "换曲测试", DurationMs = 100000 });
+                    else Set(window, "_renderer", new DlnaDevice("seek-output", "测试输出", new Uri("http://fixture.invalid/control"), null));
+                    Set(window, "_position", 12000L); slider.Value = 12;
+                    immersive.LyricsView.UpdatePlayback(12000, false, forceRebase: true);
+                }
+                finally { gate.Release(); }
+                PumpUntil(() => pending.IsCompleted); pending.GetAwaiter().GetResult();
+                Check(Get<long>(window, "_position") == 12000 && slider.Value == 12 && immersive.LyricsView.InterpolatedPositionMs == 12000,
+                    "Delayed seek preserves the replacement playback state after changing " + invalidation);
+            }
+
+            Set(window, "_playVersion", originalVersion); Set(window, "_renderer", null); SetCurrent(window, track);
+            Check(gate.Wait(0), "Fixture acquires transport ownership for a valid delayed seek");
+            Task valid;
+            try { valid = (Task)Invoke(window, "SeekAsync", 43000L)!; }
+            finally { gate.Release(); }
+            PumpUntil(() => valid.IsCompleted); valid.GetAwaiter().GetResult();
+            Check(Get<long>(window, "_position") == 43000 && slider.Value == 43 && immersive.LyricsView.InterpolatedPositionMs == 43000,
+                "A delayed seek still commits when the track, version and output remain current");
+        }
+        finally
+        {
+            window.PropertyChanged -= labelChanged;
+            slider.IsMoveToPointEnabled = originalMoveToPoint;
+            Set(window, "_seeking", false); Set(window, "_seekReleasePending", false);
+            Set(window, "_playVersion", originalVersion); Set(window, "_renderer", originalRenderer);
+            Set(window, "_duration", originalDuration); Set(window, "_position", originalPosition); SetCurrent(window, track);
+            slider.Value = originalDuration > 0 ? originalPosition * 100d / originalDuration : 0;
+            immersive.LyricsView.UpdatePlayback(originalPosition, false, forceRebase: true);
+        }
+    }
+    private static void PumpUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(3);
+        while (!condition() && DateTime.UtcNow < deadline) Pump(20);
+        if (!condition()) throw new TimeoutException("Fixture UI operation did not complete within three seconds.");
+    }
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+    private static IntPtr NativePoint(Point point) => new(unchecked(((int)(short)Math.Round(point.Y) << 16) | (ushort)(short)Math.Round(point.X)));
+    private static int NativeHitTest(Window window, Point point) => (int)SendMessage(new WindowInteropHelper(window).Handle, 0x84, IntPtr.Zero, NativePoint(point));
     private static void StopTimers(MainWindow window)
     {
         foreach (var name in new[] { "_timer", "_searchTimer", "_volumeTimer" }) Get<DispatcherTimer>(window, name).Stop();

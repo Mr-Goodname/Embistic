@@ -16,6 +16,18 @@ public sealed class LyricAppearanceSettings
     public string TranslationColor { get; set; } = "#C2CDDF";
     public string BackgroundColor { get; set; } = "#141B25";
     public double BackgroundOpacity { get; set; } = .25;
+    public bool DesktopBackgroundEnabled { get; set; } = false;
+    public string SungColor { get; set; } = "#BFD7FF";
+    public string UnsungColor { get; set; } = "#F0F3F8";
+    public string SungOutlineColor { get; set; } = "#152033";
+    public string UnsungOutlineColor { get; set; } = "#152033";
+    public double SungOutlineWidth { get; set; } = 1.4;
+    public double UnsungOutlineWidth { get; set; } = 1.4;
+    public string OutlineStyle { get; set; } = "Round";
+    public string SungOutlineStyle { get; set; } = "Round";
+    public string UnsungOutlineStyle { get; set; } = "Round";
+    public string DesktopMainAlignment { get; set; } = "Center";
+    public string DesktopSecondaryAlignment { get; set; } = "Center";
     public bool ShadowEnabled { get; set; } = true;
     public string ShadowColor { get; set; } = "#000000";
     public double ShadowOpacity { get; set; } = .9;
@@ -23,7 +35,7 @@ public sealed class LyricAppearanceSettings
     public double ShadowDepth { get; set; } = 1;
     public string DesktopLayout { get; set; } = "Translation";
     public string Alignment { get; set; } = "Center";
-    public bool ShowTrackInfo { get; set; } = true;
+    public bool ShowTrackInfo { get; set; } = false;
     public double DesktopWidth { get; set; } = 860;
     public bool DesktopTopmost { get; set; } = true;
     public bool AnimationsEnabled { get; set; } = true;
@@ -31,7 +43,7 @@ public sealed class LyricAppearanceSettings
     public string LyricTransition { get; set; } = "Slide";
     public double TransitionDurationMs { get; set; } = 320;
     public double ScrollDurationMs { get; set; } = 520;
-    public double MainFocusScale { get; set; } = 1.04;
+    public double MainFocusScale { get; set; } = 1.18;
 
     public LyricAppearanceSettings Clone() => (LyricAppearanceSettings)MemberwiseClone();
 
@@ -51,6 +63,17 @@ public sealed class LyricAppearanceSettings
         TranslationColor = Color(TranslationColor, "#C2CDDF");
         BackgroundColor = Color(BackgroundColor, "#141B25");
         BackgroundOpacity = Clamp(BackgroundOpacity, 0, 1, .25);
+        SungColor = Color(SungColor, "#BFD7FF");
+        UnsungColor = Color(UnsungColor, "#F0F3F8");
+        SungOutlineColor = Color(SungOutlineColor, "#152033");
+        UnsungOutlineColor = Color(UnsungOutlineColor, "#152033");
+        SungOutlineWidth = Clamp(SungOutlineWidth, 0, 8, 1.4);
+        UnsungOutlineWidth = Clamp(UnsungOutlineWidth, 0, 8, 1.4);
+        OutlineStyle = Choice(OutlineStyle, "Round", "Bevel", "Miter");
+        SungOutlineStyle = Choice(SungOutlineStyle, "Round", "Bevel", "Miter");
+        UnsungOutlineStyle = Choice(UnsungOutlineStyle, "Round", "Bevel", "Miter");
+        DesktopMainAlignment = Choice(DesktopMainAlignment, "Center", "Left", "Right");
+        DesktopSecondaryAlignment = Choice(DesktopSecondaryAlignment, "Center", "Left", "Right");
         ShadowColor = Color(ShadowColor, "#000000");
         ShadowOpacity = Clamp(ShadowOpacity, 0, 1, .9);
         ShadowBlur = Clamp(ShadowBlur, 0, 40, 8);
@@ -61,7 +84,7 @@ public sealed class LyricAppearanceSettings
         LyricTransition = Choice(LyricTransition, "Slide", "Fade", "None");
         TransitionDurationMs = Clamp(TransitionDurationMs, 100, 1500, 320);
         ScrollDurationMs = Clamp(ScrollDurationMs, 100, 2000, 520);
-        MainFocusScale = Clamp(MainFocusScale, 1, 1.2, 1.04);
+        MainFocusScale = Clamp(MainFocusScale, 1, 1.5, 1.18);
     }
 
     private static double Clamp(double value, double min, double max, double fallback) => double.IsFinite(value) ? Math.Clamp(value, min, max) : fallback;

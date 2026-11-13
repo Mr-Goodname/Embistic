@@ -6,5 +6,5 @@
   <Page Include="../../src/Embistic/Controls/AnimatedLyricsView.xaml" Link="Controls/AnimatedLyricsView.xaml"/>
   <Compile Include="../../src/Embistic/Models/*.cs" Link="Models/%(Filename)%(Extension)"/>
   <Compile Include="../../src/Embistic/Services/LyricsService.cs" Link="Services/LyricsService.cs"/>
- </ItemGroup>
+ <Compile Include="../../src/Embistic/Services/NetworkLyricsProvider.cs" Link="Services/NetworkLyricsProvider.cs" /><Compile Include="../../src/Embistic/Services/LyricsParser.cs" Link="Services/LyricsParser.cs" /><Compile Include="../../src/Embistic/Controls/OutlinedLyricsText.cs" Link="Controls/OutlinedLyricsText.cs" /></ItemGroup>
 </Project>

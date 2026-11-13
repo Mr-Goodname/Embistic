@@ -1,6 +1,13 @@
 namespace Embistic.Models;
 
-public sealed record LyricsLine(TimeSpan Time, string Text);
+/// <summary>Absolute song times and the corresponding text range, as provided by the lyric file.</summary>
+public sealed record LyricsWord(TimeSpan Start, TimeSpan End, string Text, int TextIndex = 0);
+
+public sealed record LyricsLine(TimeSpan Time, string Text)
+{
+    public IReadOnlyList<LyricsWord> Words { get; init; } = Array.Empty<LyricsWord>();
+    public TimeSpan? EndTime { get; init; }
+}
 
 public sealed class LyricsDocument
 {

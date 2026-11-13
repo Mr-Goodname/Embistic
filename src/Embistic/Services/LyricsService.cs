@@ -19,6 +19,8 @@ public sealed class LyricsService
     private static readonly Regex EnhancedTimestamp = new(@"<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex Metadata = new(@"^\s*(?:\[(?:ar|al|ti|au|by|re|ve|length|id|tool|offset)\s*:[^\]]*\]\s*)+$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private readonly string _cacheDirectory;
+    private NetworkLyricsSource[] _sources = Array.Empty<NetworkLyricsSource>();
+    public void ConfigureSources(IEnumerable<NetworkLyricsSource> sources) => _sources = sources.Where(source => source.Enabled).Take(16).Select(source => source.Clone()).ToArray();
 
     public LyricsService(string? cacheDirectory = null)
     {
@@ -70,51 +72,7 @@ public sealed class LyricsService
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    public static LyricsDocument ParseLrc(string text, string source = "LRC")
-    {
-        if (string.IsNullOrWhiteSpace(text)) return LyricsDocument.Empty();
-        text = text.TrimStart('\uFEFF').Replace("\r\n", "\n").Replace('\r', '\n');
-        long offsetMs = 0;
-        foreach (Match match in Offset.Matches(text))
-            if (long.TryParse(match.Groups["value"].Value, CultureInfo.InvariantCulture, out var value)) offsetMs = Math.Clamp(value, -86400000, 86400000);
-
-        var timed = new List<LyricsLine>();
-        var plain = new List<string>();
-        foreach (var raw in text.Split('\n'))
-        {
-            if (Metadata.IsMatch(raw)) continue;
-            var stamps = Timestamp.Matches(raw);
-            var content = EnhancedTimestamp.Replace(Offset.Replace(Timestamp.Replace(raw, ""), ""), "").Trim();
-            if (stamps.Count == 0)
-            {
-                if (content.Length > 0) plain.Add(content);
-                continue;
-            }
-            if (content.Length > 0) plain.Add(content);
-            foreach (Match stamp in stamps)
-            {
-                var hours = stamp.Groups["hour"].Success ? int.Parse(stamp.Groups["hour"].Value, CultureInfo.InvariantCulture) : 0;
-                var minutes = int.Parse(stamp.Groups["minute"].Value, CultureInfo.InvariantCulture);
-                var seconds = int.Parse(stamp.Groups["second"].Value, CultureInfo.InvariantCulture);
-                if (seconds > 59 || (stamp.Groups["hour"].Success && minutes > 59)) continue;
-                var fraction = stamp.Groups["fraction"].Value;
-                var milliseconds = fraction.Length > 0 ? int.Parse(fraction.PadRight(3, '0'), CultureInfo.InvariantCulture) : 0;
-                var time = TimeSpan.FromMilliseconds(((hours * 60L + minutes) * 60 + seconds) * 1000 + milliseconds + offsetMs);
-                timed.Add(new LyricsLine(time, content));
-            }
-        }
-        // Translation lines often carry exactly the same timestamp as their original line.
-        var lines = timed.OrderBy(x => x.Time).GroupBy(x => x.Time)
-            .Select(group => new LyricsLine(group.Key, string.Join("\n", group.Select(x => x.Text).Where(x => x.Length > 0).Distinct())))
-            .ToArray();
-        return new LyricsDocument
-        {
-            Lines = lines,
-            PlainText = string.Join("\n", plain),
-            Source = source,
-            IsSynced = lines.Any(x => x.Text.Length > 0)
-        };
-    }
+    public static LyricsDocument ParseLrc(string text, string source = "LRC") => LyricsParser.Parse(text, source);
 
     public static int FindLineIndex(LyricsDocument document, long positionMs, double offsetMs = 0)
     {
@@ -136,7 +94,9 @@ public sealed class LyricsService
     {
         if (string.IsNullOrWhiteSpace(track.Title) || string.IsNullOrWhiteSpace(track.Artist))
             return LyricsDocument.Empty("歌曲信息不足，无法匹配歌词");
-        var cachePath = Path.Combine(_cacheDirectory, GetCacheKey(track) + ".json");
+        var sources = _sources;
+        var sourceKey = sources.Length == 0 ? "" : "-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(sources))))[..20];
+        var cachePath = Path.Combine(_cacheDirectory, GetCacheKey(track) + sourceKey + ".json");
         try
         {
             if (File.Exists(cachePath))
@@ -149,6 +109,18 @@ public sealed class LyricsService
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
 
         var result = LyricsDocument.Empty();
+        foreach (var source in sources)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var candidate = await NetworkLyricsProvider.FetchAsync(source, track, cancellationToken).ConfigureAwait(false);
+            if (candidate.IsSynced || candidate.IsInstrumental)
+            {
+                try { await WriteAtomicAsync(cachePath, JsonSerializer.Serialize(new CacheEntry { CreatedUtc = DateTimeOffset.UtcNow, Document = candidate }), cancellationToken).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                return candidate;
+            }
+            if (!string.IsNullOrWhiteSpace(candidate.Source) && !string.IsNullOrWhiteSpace(candidate.PlainText)) result = candidate;
+        }
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         bounded.CancelAfter(TimeSpan.FromSeconds(20));
         // The first accurate timed result wins; a slow catalogue cannot delay a usable one.

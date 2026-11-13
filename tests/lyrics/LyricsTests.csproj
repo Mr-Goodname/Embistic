@@ -11,5 +11,5 @@
     <Compile Include="../../src/Embistic/Services/LyricsService.cs" Link="Services/LyricsService.cs" />
     <Page Include="../../src/Embistic/Views/DesktopLyricsWindow.xaml" Link="Views/DesktopLyricsWindow.xaml" />
     <Compile Include="../../src/Embistic/Views/DesktopLyricsWindow.xaml.cs" Link="Views/DesktopLyricsWindow.xaml.cs" />
-  </ItemGroup>
+  <Compile Include="../../src/Embistic/Services/NetworkLyricsProvider.cs" Link="Services/NetworkLyricsProvider.cs" /><Compile Include="../../src/Embistic/Services/LyricsParser.cs" Link="Services/LyricsParser.cs" /><Compile Include="../../src/Embistic/Controls/OutlinedLyricsText.cs" Link="Controls/OutlinedLyricsText.cs" /><Compile Include="../../src/Embistic/Controls/LyricScrollMath.cs" Link="Controls/LyricScrollMath.cs" /></ItemGroup>
 </Project>
