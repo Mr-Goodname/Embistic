@@ -111,4 +111,31 @@ using (var client = new EmbyClient(connectionSettings))
 }
 await server;
 Check(new Track { DurationMs = 3661000 }.DurationText == "1:01:01", "Long duration formatting");
+var downloaded = Path.Combine(Path.GetTempPath(), "Embistic-source-" + Guid.NewGuid().ToString("N") + ".flac");
+try
+{
+    await File.WriteAllBytesAsync(downloaded, new byte[] { 1 });
+    var track = new Track { Id = "saved-track", Container = "flac" };
+    using var remote = new EmbyClient(new AppSettings { ServerUrl = "https://fixture.invalid", UserId = "listener", ApiKey = "fixture-token" });
+    var localUrl = PlaybackSourceResolver.GetUrl(track, downloaded, false, null);
+    Check(new Uri(localUrl).IsFile && new Uri(localUrl).LocalPath == downloaded, "Downloaded music plays locally without an Emby connection");
+    Check(PlaybackSourceResolver.GetUrl(track, downloaded, false, remote) == localUrl, "Downloaded source is preferred over the online stream");
+    Check(PlaybackSourceResolver.GetUrl(track, downloaded, true, remote) == remote.GetStreamUrl(track), "DLNA receives the server stream rather than a local file path");
+    Check(PlaybackSourceResolver.GetUrl(track, downloaded + ".missing", false, remote) == remote.GetStreamUrl(track), "A missing download falls back to the connected server");
+    foreach (var cast in new[] { false, true })
+    {
+        var rejected = false;
+        try { PlaybackSourceResolver.GetUrl(track, cast ? downloaded : null, cast, null); }
+        catch (InvalidOperationException) { rejected = true; }
+        Check(rejected, cast ? "Offline DLNA does not leak an inaccessible local path" : "Missing offline music reports a clear failure");
+    }
+    var radio = new Track { Id = "radio:test", Path = "https://radio.invalid/live" };
+    Check(PlaybackSourceResolver.GetUrl(radio, null, false, null) == radio.Path && PlaybackSourceResolver.GetUrl(radio, null, true, null) == radio.Path, "Local and remote radio use the station URL without Emby");
+    radio.Path = "file:///C:/private.flac";
+    var invalidRadio = false;
+    try { PlaybackSourceResolver.GetUrl(radio, null, false, null); }
+    catch (InvalidOperationException) { invalidRadio = true; }
+    Check(invalidRadio, "Radio entries cannot be used as arbitrary local file sources");
+}
+finally { File.Delete(downloaded); }
 Console.WriteLine("Media service smoke checks completed.");

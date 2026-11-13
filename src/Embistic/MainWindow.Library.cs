@@ -51,7 +51,7 @@ public partial class MainWindow
     private async Task LoadLibraryBrowseAsync(LibraryBrowseState state)
     {
         var client = _emby;
-        if (client is null) { Status = "请先连接 Emby。"; return; }
+        if (client is null && state.Category != "radio") { Status = "请先连接 Emby。"; return; }
         var request = ++_libraryRequestVersion;
         var connection = _connectVersion;
         _libraryState = state;
@@ -72,16 +72,16 @@ public partial class MainWindow
         IReadOnlyList<LibraryItem> items;
         if (state.Category == "folders")
         {
-            var page = await client.BrowseFolderAsync(state.Container?.Id, 0, 200);
+            var page = await client!.BrowseFolderAsync(state.Container?.Id, 0, 200);
             if (!IsLibraryRequestCurrent(request, connection, client)) return;
             _libraryTotal = page.TotalCount;
             items = page.Items;
         }
         else
         {
-            items = state.Category == "playlists" ? await client.GetPlaylistsAsync()
+            items = state.Category == "playlists" ? await client!.GetPlaylistsAsync()
                 : state.Category == "radio" ? RadioLibraryItems()
-                : await client.GetLibraryGroupsAsync(state.Category);
+                : await client!.GetLibraryGroupsAsync(state.Category);
             if (!IsLibraryRequestCurrent(request, connection, client)) return;
             _libraryAllItems = items;
             _libraryTotal = items.Count;
@@ -99,7 +99,7 @@ public partial class MainWindow
         } : $"共 {_libraryTotal:N0} 个条目 · 双击查看或播放";
     }
 
-    private bool IsLibraryRequestCurrent(int request, int connection, Services.EmbyClient client) =>
+    private bool IsLibraryRequestCurrent(int request, int connection, Services.EmbyClient? client) =>
         !_closing && request == _libraryRequestVersion && connection == _connectVersion && client == _emby && _section == "browse";
 
     private void UpdateLibraryPaging()
@@ -110,7 +110,7 @@ public partial class MainWindow
 
     private async void MoreLibrary_Click(object sender, RoutedEventArgs e) => await GuardAsync(async () =>
     {
-        if (_libraryState is null || _emby is null || _section != "browse") return;
+        if (_libraryState is null || (_emby is null && _libraryState.Category != "radio") || _section != "browse") return;
         var request = _libraryRequestVersion;
         var connection = _connectVersion;
         var client = _emby;
@@ -121,7 +121,7 @@ public partial class MainWindow
             if (_libraryAllItems is not null) page = _libraryAllItems.Skip(_libraryOffset).Take(200).ToArray();
             else
             {
-                var response = await client.BrowseFolderAsync(_libraryState.Container?.Id, _libraryOffset, 200);
+                var response = await client!.BrowseFolderAsync(_libraryState.Container?.Id, _libraryOffset, 200);
                 page = response.Items;
                 if (!IsLibraryRequestCurrent(request, connection, client)) return;
                 _libraryTotal = response.TotalCount;

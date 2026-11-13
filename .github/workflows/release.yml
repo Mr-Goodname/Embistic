@@ -36,6 +36,12 @@ jobs:
           $releaseVersion=$Matches[1]
           "version=$releaseVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+      - name: Verify music services and native UI
+        shell: pwsh
+        run: |
+          & ./tools/test.ps1 -IncludeMedia
+          if($LASTEXITCODE -ne 0){throw 'Release verification failed.'}
+
       - name: Publish self-contained Windows x64 app
         shell: pwsh
         env:

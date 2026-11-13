@@ -10,7 +10,8 @@ $projects = @(
     'appearance/AppearanceTests.csproj',
     'animated-lyrics/AnimatedLyricsChecks.csproj',
     'theme/ThemeChecks.csproj',
-    'spectrum/SpectrumChecks.csproj'
+    'spectrum/SpectrumChecks.csproj',
+    'integration/IntegrationChecks.csproj'
 )
 if ($IncludeMedia) { $projects += 'media/MediaSmoke.csproj' }
 foreach ($project in $projects) {

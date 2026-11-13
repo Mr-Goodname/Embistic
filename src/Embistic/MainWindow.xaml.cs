@@ -41,6 +41,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _spectrumAttempted;
     private IReadOnlyList<Track>? _collectionTracks;
     private string _previousSection = "home";
+    private (string Title, string Subtitle)? _lyricsReturnHeading;
     private bool _appearancePreviewActive;
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private readonly DispatcherTimer _searchTimer = new() { Interval = TimeSpan.FromMilliseconds(450) };
@@ -249,7 +250,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void ShowPage(string section)
     {
         _pageCts?.Cancel();
-        if (_section != "lyrics" && section == "lyrics") _previousSection = _section;
+        if (_section != "lyrics" && section == "lyrics")
+        {
+            _previousSection = _section;
+            _lyricsReturnHeading = (PageTitle, PageSubtitle);
+        }
+        else if (_section == "lyrics" && section == _previousSection && _lyricsReturnHeading is { } heading)
+        {
+            PageTitle = heading.Title; PageSubtitle = heading.Subtitle;
+        }
         // Keep the collection while showing its player/queue, so returning preserves paging.
         if (section is "home" or "tracks" or "favorites" or "album" or "albums" or "library" or "browse") _collectionTracks = null;
         _section = section;

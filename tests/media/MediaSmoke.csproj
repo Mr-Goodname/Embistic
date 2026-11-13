@@ -4,6 +4,7 @@
     <Compile Include="../../src/Embistic/Models/*.cs" Link="Models/%(Filename)%(Extension)" />
     <Compile Include="../../src/Embistic/Services/EmbyClient.cs" Link="EmbyClient.cs" />
     <Compile Include="../../src/Embistic/Services/PlaybackService.cs" Link="PlaybackService.cs" />
+    <Compile Include="../../src/Embistic/Services/PlaybackSourceResolver.cs" Link="PlaybackSourceResolver.cs" />
     <Compile Include="../../src/Embistic/Services/WindowsAudioDevices.cs" Link="WindowsAudioDevices.cs" />
     <Compile Include="../../src/Embistic/Services/SettingsService.cs" Link="SettingsService.cs" />
     <PackageReference Include="LibVLCSharp" Version="3.9.6" />

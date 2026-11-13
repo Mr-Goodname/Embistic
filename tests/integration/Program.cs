@@ -8,10 +8,13 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using System.Windows.Markup;
+using System.Xml.Linq;
 using Embistic;
 using Embistic.Controls;
 using Embistic.Models;
 using Embistic.Services;
+using Track = Embistic.Models.Track;
 
 internal static class Program
 {
@@ -23,9 +26,19 @@ internal static class Program
     {
         var projectRoot = FindProjectRoot();
         var settingsBefore = SettingsFingerprint();
-        var app = new FixtureApp { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-        app.InitializeComponent();
-        app.StartupUri = null;
+        var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        // Load the production resource definitions without executing App.OnStartup
+        // or acquiring the user's single-instance mutex.
+        var appXaml = XElement.Load(Path.Combine(projectRoot, "src", "Embistic", "App.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        var resources = new XElement(presentation + "ResourceDictionary",
+            new XAttribute("xmlns", presentation.NamespaceName),
+            new XAttribute(XNamespace.Xmlns + "x", "http://schemas.microsoft.com/winfx/2006/xaml"),
+            new XAttribute(XNamespace.Xmlns + "local", "clr-namespace:Embistic;assembly=Embistic"),
+            appXaml.Element(presentation + "Application.Resources")!.Elements());
+        foreach (var element in resources.Descendants().Where(element => element.Name.NamespaceName == "clr-namespace:Embistic"))
+            element.Name = XName.Get(element.Name.LocalName, "clr-namespace:Embistic;assembly=Embistic");
+        app.Resources = (ResourceDictionary)XamlReader.Parse(resources.ToString());
         MainWindow? window = null;
         try
         {
@@ -67,7 +80,7 @@ internal static class Program
             window.ShowActivated = false;
             window.WindowStartupLocation = WindowStartupLocation.Manual;
             window.Left = -10000; window.Top = -10000;
-            window.Width = 1480; window.Height = 960;
+            window.Width = 1480; window.Height = 1040;
             window.Opacity = 0;
             window.Show();
             Pump();
@@ -162,6 +175,11 @@ internal static class Program
             Set(window, "_playing", false); Invoke(window, "NotifyNowPlaying");
             Check(!Get<bool>(immersive, "_rotating"), "Pausing stops record rotation");
             Check(!Get<AudioSpectrumService>(window, "_spectrumService").IsRunning, "UI checks never capture a real audio endpoint");
+            settings.Display.RadioStations.Add(new RadioStation { Name = "测试电台", Url = "https://radio.invalid/live" });
+            Invoke(window, "LibraryShortcut_Click", new Button { DataContext = window.LibraryShortcuts.Single(item => item.Id == "radio") }, new RoutedEventArgs());
+            Pump();
+            Check(window.LibraryItems.Count == 1 && window.LibraryItems[0].Track?.Path == "https://radio.invalid/live",
+                "Saved radio stations remain accessible without connecting to Emby");
 
             if (args.Contains("--screenshots"))
                 CaptureDocumentation(window, settings, albums, track, projectRoot);
@@ -263,7 +281,13 @@ internal static class Program
     {
         element.UpdateLayout();
         var bitmap = new RenderTargetBitmap((int)Math.Ceiling(element.ActualWidth), (int)Math.Ceiling(element.ActualHeight), 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(element); SaveBitmap(bitmap, path);
+        var surface = new DrawingVisual();
+        using (var drawing = surface.RenderOpen())
+        {
+            drawing.DrawRectangle((Brush)element.FindResource("Bg"), null, new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+            drawing.DrawRectangle(new VisualBrush(element), null, new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+        }
+        bitmap.Render(surface); SaveBitmap(bitmap, path);
     }
     private static void SaveBitmap(BitmapSource bitmap, string path)
     {
@@ -302,9 +326,5 @@ internal static class Program
         var timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(milliseconds) };
         timer.Tick += (_, _) => { timer.Stop(); frame.Continue = false; };
         timer.Start(); Dispatcher.PushFrame(frame);
-    }
-    private sealed class FixtureApp : App
-    {
-        protected override void OnStartup(StartupEventArgs e) { }
     }
 }
