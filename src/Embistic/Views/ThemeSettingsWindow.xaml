@@ -1,0 +1,67 @@
+<Window x:Class="Embistic.Views.ThemeSettingsWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="Embistic · 主题" Width="800" Height="710" MinWidth="670" MinHeight="610"
+ WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}"
+ FontFamily="Segoe UI, Microsoft YaHei UI" FontSize="14" Loaded="Window_Loaded" Closed="Window_Closed">
+ <Window.Resources>
+  <Style x:Key="ThemeCard" TargetType="Border">
+   <Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/>
+   <Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="14"/><Setter Property="Padding" Value="22"/><Setter Property="Margin" Value="0,0,0,16"/>
+  </Style>
+  <Style x:Key="ThemeHint" TargetType="TextBlock">
+   <Setter Property="Foreground" Value="{DynamicResource Muted}"/><Setter Property="FontSize" Value="12"/><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="LineHeight" Value="21"/>
+  </Style>
+ </Window.Resources>
+ <Grid>
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="25,23">
+   <StackPanel><TextBlock Text="主题与强调色" FontSize="25" FontWeight="SemiBold"/><TextBlock Text="换一种颜色，继续听喜欢的音乐。" Style="{StaticResource ThemeHint}" Margin="0,6,0,0"/></StackPanel>
+  </Border>
+  <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="24,20">
+   <StackPanel>
+    <Border Style="{StaticResource ThemeCard}">
+     <StackPanel><TextBlock Text="外观模式" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,14"/>
+      <ComboBox x:Name="ModeCombo" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Mode,Mode=TwoWay,UpdateSourceTrigger=PropertyChanged}" SelectionChanged="Value_Changed" AutomationProperties.Name="主题模式"/>
+      <TextBlock Text="跟随系统会随 Windows 的应用颜色模式自动切换。" Style="{StaticResource ThemeHint}" Margin="0,12,0,0"/>
+     </StackPanel>
+    </Border>
+    <Border Style="{StaticResource ThemeCard}">
+     <StackPanel><TextBlock Text="强调色" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,10"/>
+      <CheckBox x:Name="SystemAccentBox" Content="跟随 Windows 系统强调色" IsChecked="{Binding FollowSystemAccent,Mode=TwoWay,UpdateSourceTrigger=PropertyChanged}" Checked="Value_Changed" Unchecked="Value_Changed" AutomationProperties.Name="跟随系统强调色"/>
+      <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+       <Border x:Name="AccentChip" Width="32" Height="32" CornerRadius="8" Background="{DynamicResource Accent}" VerticalAlignment="Center" BorderBrush="{DynamicResource Line}" BorderThickness="1"/>
+       <TextBox x:Name="AccentBox" Grid.Column="1" Text="{Binding AccentColor,Mode=TwoWay,UpdateSourceTrigger=PropertyChanged}" TextChanged="Value_Changed" AutomationProperties.Name="自定义强调色"/>
+       <TextBlock x:Name="SystemAccentLabel" Grid.Column="2" Style="{StaticResource ThemeHint}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+      </Grid>
+      <WrapPanel Margin="0,13,0,0">
+       <Button Background="#ADC9F0" Width="34" Height="28" Margin="0,0,8,0" Padding="0" Tag="#ADC9F0" Click="ColorPreset_Click" AutomationProperties.Name="浅蓝色"/>
+       <Button Background="#73BCFC" Width="34" Height="28" Margin="0,0,8,0" Padding="0" Tag="#73BCFC" Click="ColorPreset_Click" AutomationProperties.Name="蓝色"/>
+       <Button Background="#A99EF0" Width="34" Height="28" Margin="0,0,8,0" Padding="0" Tag="#A99EF0" Click="ColorPreset_Click" AutomationProperties.Name="紫色"/>
+       <Button Background="#4FAF93" Width="34" Height="28" Margin="0,0,8,0" Padding="0" Tag="#4FAF93" Click="ColorPreset_Click" AutomationProperties.Name="绿色"/>
+       <Button Background="#E3AE6B" Width="34" Height="28" Margin="0,0,8,0" Padding="0" Tag="#E3AE6B" Click="ColorPreset_Click" AutomationProperties.Name="金色"/>
+       <Button Background="#E791A5" Width="34" Height="28" Margin="0,0,8,0" Padding="0" Tag="#E791A5" Click="ColorPreset_Click" AutomationProperties.Name="粉色"/>
+      </WrapPanel>
+      <TextBlock x:Name="ValidationMessage" Foreground="{DynamicResource Danger}" FontSize="12" Margin="0,10,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+     </StackPanel>
+    </Border>
+    <Border Style="{StaticResource ThemeCard}">
+     <StackPanel><TextBlock Text="实时预览" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,15"/>
+      <Border Background="{DynamicResource Sidebar}" CornerRadius="12" Padding="18">
+       <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="62"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <Border Background="{DynamicResource Accent}" Width="48" Height="48" CornerRadius="12"><TextBlock Text="♪" FontSize="29" Foreground="{DynamicResource AccentText}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+        <StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock Text="把此刻交给音乐" Foreground="{DynamicResource Text}" FontWeight="SemiBold"/><TextBlock Text="Embistic · 你的音乐空间" Style="{StaticResource ThemeHint}" Margin="0,5,0,0"/></StackPanel>
+        <Button Grid.Column="2" Content="▶" Style="{StaticResource Primary}" Width="44" Height="44" Padding="0" IsHitTestVisible="False" Focusable="False"/>
+       </Grid>
+      </Border>
+      <TextBlock x:Name="PreviewLabel" Style="{StaticResource ThemeHint}" Margin="0,12,0,0"/>
+     </StackPanel>
+    </Border>
+   </StackPanel>
+  </ScrollViewer>
+  <Border Grid.Row="2" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="24,17">
+   <DockPanel><Button Content="恢复默认" Click="Reset_Click" DockPanel.Dock="Left" Background="Transparent" Foreground="{DynamicResource AccentInk}" Padding="0,10"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Content="取消" Click="Cancel_Click" Margin="0,0,10,0"/><Button x:Name="SaveButton" Content="保存设置" Style="{StaticResource Primary}" Click="Save_Click" AutomationProperties.Name="保存主题设置"/></StackPanel>
+   </DockPanel>
+  </Border>
+ </Grid>
+</Window>

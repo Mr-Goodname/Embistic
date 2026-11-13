@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+ <ItemGroup>
+  <Compile Include="../../src/Embistic/Models/ThemeSettings.cs" Link="ThemeSettings.cs"/>
+  <Compile Include="../../src/Embistic/Services/ThemeService.cs" Link="ThemeService.cs"/>
+  <Compile Include="../../src/Embistic/ArtworkConverter.cs" Link="ArtworkConverter.cs"/>
+  <Compile Include="../../src/Embistic/Views/ThemeSettingsWindow.xaml.cs" Link="ThemeSettingsWindow.xaml.cs"/>
+  <Page Include="../../src/Embistic/Views/ThemeSettingsWindow.xaml" Link="ThemeSettingsWindow.xaml"/>
+ </ItemGroup>
+</Project>

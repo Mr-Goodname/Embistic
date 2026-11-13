@@ -1,0 +1,64 @@
+<Window x:Class="Embistic.Views.DesktopLyricsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Embistic · 桌面歌词" Width="860" Height="182" MinWidth="400" MaxWidth="2200" MinHeight="70" SizeToContent="Height"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="CanResizeWithGrip" Topmost="True" ShowInTaskbar="False" ShowActivated="False"
+        FontFamily="Microsoft YaHei UI, Segoe UI" Foreground="#EFF5FF" MouseLeftButtonDown="Window_MouseLeftButtonDown">
+    <Window.Resources>
+        <Style TargetType="MenuItem">
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
+            <Setter Property="Padding" Value="12,6"/>
+        </Style>
+        <Style x:Key="MainLyricStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="32"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#BFD7FF"/>
+            <Setter Property="TextAlignment" Value="Center"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+        </Style>
+        <Style x:Key="SecondaryLyricStyle" TargetType="TextBlock" BasedOn="{StaticResource MainLyricStyle}">
+            <Setter Property="FontSize" Value="23"/>
+            <Setter Property="FontWeight" Value="Normal"/>
+            <Setter Property="Foreground" Value="#C2CDDF"/>
+            <Setter Property="Margin" Value="0,8,0,0"/>
+        </Style>
+    </Window.Resources>
+    <Border x:Name="Surface" Background="#40141B25" BorderBrush="#3D9EBFEF" BorderThickness="1" CornerRadius="18" Padding="22,12,22,18">
+        <Border.ContextMenu>
+            <ContextMenu>
+                <MenuItem Header="锁定并穿透（主窗口可解锁）" Click="Lock_Click"/>
+                <Separator/>
+                <MenuItem Header="歌词提前 0.25 秒" Click="Advance_Click"/>
+                <MenuItem Header="歌词延后 0.25 秒" Click="Delay_Click"/>
+                <MenuItem Header="重置时间偏移" Click="ResetOffset_Click"/>
+                <Separator/>
+                <MenuItem Header="放大字号" Click="Larger_Click"/>
+                <MenuItem Header="缩小字号" Click="Smaller_Click"/>
+                <Separator/>
+                <MenuItem Header="隐藏桌面歌词" Click="Hide_Click"/>
+            </ContextMenu>
+        </Border.ContextMenu>
+        <StackPanel>
+            <DockPanel x:Name="TrackHeader" Margin="0,0,0,9">
+                <TextBlock x:Name="ModeLabel" DockPanel.Dock="Right" FontSize="10" Foreground="#99C4D3E9" Text="拖动移动 · 右键设置"/>
+                <TextBlock x:Name="TrackLabel" Text="Embistic · 桌面歌词" FontSize="11" Foreground="#AAC4D3E9" TextTrimming="CharacterEllipsis" Margin="0,0,16,0"/>
+            </DockPanel>
+            <Grid x:Name="LyricStage" ClipToBounds="True">
+                <Canvas x:Name="OutgoingCanvas" IsHitTestVisible="False" Visibility="Collapsed">
+                    <StackPanel x:Name="OutgoingLayer" Width="{Binding ActualWidth, ElementName=LyricStage}" Opacity="0">
+                        <StackPanel.RenderTransform><TranslateTransform x:Name="OutgoingTranslate"/></StackPanel.RenderTransform>
+                        <TextBlock x:Name="PreviousCurrentLine" Style="{StaticResource MainLyricStyle}"/>
+                        <TextBlock x:Name="PreviousNextLine" Style="{StaticResource SecondaryLyricStyle}"/>
+                    </StackPanel>
+                </Canvas>
+                <StackPanel x:Name="CurrentLayer">
+                    <StackPanel.RenderTransform><TranslateTransform x:Name="CurrentTranslate"/></StackPanel.RenderTransform>
+                    <TextBlock x:Name="CurrentLine" Text="让音乐流动" Style="{StaticResource MainLyricStyle}"/>
+                    <TextBlock x:Name="NextLine" Text="播放歌曲后，将自动查找歌词" Style="{StaticResource SecondaryLyricStyle}"/>
+                </StackPanel>
+            </Grid>
+        </StackPanel>
+    </Border>
+</Window>

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><PlatformTarget>x64</PlatformTarget></PropertyGroup>
+ <ItemGroup>
+  <Compile Include="../../src/Embistic/Controls/AnimatedLyricsView.xaml.cs" Link="Controls/AnimatedLyricsView.xaml.cs"/>
+  <Compile Include="../../src/Embistic/Controls/LyricScrollMath.cs" Link="Controls/LyricScrollMath.cs"/>
+  <Page Include="../../src/Embistic/Controls/AnimatedLyricsView.xaml" Link="Controls/AnimatedLyricsView.xaml"/>
+  <Compile Include="../../src/Embistic/Models/*.cs" Link="Models/%(Filename)%(Extension)"/>
+  <Compile Include="../../src/Embistic/Services/LyricsService.cs" Link="Services/LyricsService.cs"/>
+ </ItemGroup>
+</Project>

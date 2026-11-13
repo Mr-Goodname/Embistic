@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+dist/
+artifacts/
+reference/
+*.user
+*.log
+*.local.json
