@@ -1,4 +1,4 @@
-param([switch]$IncludeMedia)
+param([switch]$IncludeMedia, [switch]$KeepGoing)
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $projects = @(
@@ -22,8 +22,13 @@ $projects = @(
     'integration/IntegrationChecks.csproj'
 )
 if ($IncludeMedia) { $projects += 'media/MediaSmoke.csproj' }
+$failedProjects = @()
 foreach ($project in $projects) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build.ps1') run --project (Join-Path $projectRoot ('tests/' + $project)) -c Release
-    if ($LASTEXITCODE -ne 0) { throw ('Checks failed: ' + $project) }
+    if ($LASTEXITCODE -ne 0) {
+        if (!$KeepGoing) { throw ('Checks failed: ' + $project) }
+        $failedProjects += $project
+    }
 }
+if ($failedProjects.Count -gt 0) { throw ('Checks failed: ' + ($failedProjects -join ', ')) }
 Write-Output ('All ' + $projects.Count + ' check projects passed.')
