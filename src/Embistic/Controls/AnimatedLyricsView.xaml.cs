@@ -30,6 +30,7 @@ public partial class AnimatedLyricsView : UserControl
     private bool _hasPosition, _manualScrolling, _layoutScheduled, _animateAfterLayout;
     private double _offsetMs, _targetScrollOffset;
     private readonly LyricPlaybackClock _clock = new();
+    private readonly TimeProvider _scrollTime;
     private bool _renderAttached, _scrollMoving;
     private long _scrollStarted;
     private double _scrollFrom, _scrollDuration;
@@ -45,8 +46,13 @@ public partial class AnimatedLyricsView : UserControl
     public double CurrentScrollOffset => _ownsVisualOffset ? _visualOffset : Scroller.VerticalOffset;
     public double TargetScrollOffset => _targetScrollOffset;
 
-    public AnimatedLyricsView()
+    public AnimatedLyricsView() : this(TimeProvider.System) { }
+
+    // Keep rendering and audio observation on their existing clocks. The scroll
+    // timeline can be controlled independently when verifying a slow re-layout.
+    internal AnimatedLyricsView(TimeProvider scrollTime)
     {
+        _scrollTime = scrollTime ?? throw new ArgumentNullException(nameof(scrollTime));
         InitializeComponent();
         _followTimer.Tick += FollowTimer_Tick;
         Loaded += (_, _) => { StartRendering(); ScheduleLayoutFollow(); };
@@ -327,13 +333,13 @@ public partial class AnimatedLyricsView : UserControl
             // A late remeasure may change the destination, but it cannot discard the motion.
             // An unchanged destination keeps the original easing clock entirely intact.
             if (Math.Abs(target - _targetScrollOffset) < .5) { _targetScrollOffset = target; return; }
-            var remaining = _scrollDuration - Stopwatch.GetElapsedTime(_scrollStarted).TotalMilliseconds;
+            var remaining = _scrollDuration - _scrollTime.GetElapsedTime(_scrollStarted).TotalMilliseconds;
             if (remaining > 0 && Math.Abs(target - current) >= .5)
             {
                 _scrollFrom = current;
                 _targetScrollOffset = target;
                 _scrollDuration = remaining;
-                _scrollStarted = Stopwatch.GetTimestamp();
+                _scrollStarted = _scrollTime.GetTimestamp();
                 return;
             }
         }
@@ -346,7 +352,7 @@ public partial class AnimatedLyricsView : UserControl
         }
         _scrollFrom = current;
         _scrollDuration = durationMs ?? _appearance.ScrollDurationMs;
-        _scrollStarted = Stopwatch.GetTimestamp();
+        _scrollStarted = _scrollTime.GetTimestamp();
         _scrollMoving = true;
         StartRendering();
     }
@@ -475,7 +481,7 @@ public partial class AnimatedLyricsView : UserControl
         }
         if (_clock.IsPlaying) UpdatePositionCore((long)_clock.PositionMs, _offsetMs);
         if (!_scrollMoving) return;
-        var progress = Stopwatch.GetElapsedTime(_scrollStarted).TotalMilliseconds / _scrollDuration;
+        var progress = _scrollTime.GetElapsedTime(_scrollStarted).TotalMilliseconds / _scrollDuration;
         var value = _scrollFrom + (_targetScrollOffset - _scrollFrom) * LyricScrollMath.EaseOut(progress);
         SetVisualScroll(value);
         if (progress >= 1) { _scrollMoving = false; CommitScroll(_targetScrollOffset); }

@@ -25,14 +25,28 @@ internal static class Program
         var measuredHost = new MeasuredHost { Child = view };
         var window = new Window
         {
-            Content = measuredHost, Width = 1280, Height = 820, ShowActivated = false,
-            ShowInTaskbar = false, Left = -10000, Top = -10000, WindowStartupLocation = WindowStartupLocation.Manual
+            Content = measuredHost, Width = Math.Min(1280, SystemParameters.WorkArea.Width - 48),
+            Height = Math.Min(820, SystemParameters.WorkArea.Height - 48), ShowActivated = false,
+            ShowInTaskbar = false, Topmost = true, Opacity = 1, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize,
+            Left = SystemParameters.WorkArea.Left + 24, Top = SystemParameters.WorkArea.Top + 24,
+            WindowStartupLocation = WindowStartupLocation.Manual
         };
         try
         {
             view.ApplyAppearance(new LyricAppearanceSettings { AnimationsEnabled = true });
             view.ApplySpectrum(new SpectrumSettings { Enabled = true, ShowRing = true, ShowBottom = true, ShowTop = true });
-            window.Show(); Pump(160);
+            // This checks real composition frames. A fully off-screen HWND can be
+            // throttled past the entire 220 ms animation, even with a pumped dispatcher.
+            var contentRendered = false; var firstComposition = false;
+            window.ContentRendered += (_, _) => contentRendered = true;
+            EventHandler firstFrame = (_, _) => firstComposition = true;
+            CompositionTarget.Rendering += firstFrame;
+            try
+            {
+                window.Show();
+                WaitFor(() => contentRendered && firstComposition, "The visible fixture did not render its first composition frame");
+            }
+            finally { CompositionTarget.Rendering -= firstFrame; }
             var art = WriteArtwork(root);
             view.SetTrack(new Track { Id = "cover-layout-fixture", Title = "夜航", Artist = "Embistic", ImageUrl = new Uri(art).AbsoluteUri });
             view.UpdatePlayback(0, true); Pump(180);
@@ -83,14 +97,35 @@ internal static class Program
             var spectrum = view.Spectrum;
             Check(Math.Abs(BottomBaseline(view) - (view.ActualHeight - 106)) < .1, "Visible player places the spectrum immediately above its top edge");
             var measuredBefore = measuredHost.Measures; var arrangedBefore = measuredHost.Arranges;
-            view.SetPlayerChrome(106, false, true);
-            if (SystemParameters.ClientAreaAnimation)
-                WaitFor(() => BottomBaseline(view) > view.ActualHeight - 106 && BottomBaseline(view) < view.ActualHeight,
-                    "The compositor did not deliver an intermediate retract frame");
-            var intermediate = BottomBaseline(view);
-            Check(!SystemParameters.ClientAreaAnimation || (intermediate > view.ActualHeight - 106 && intermediate < view.ActualHeight),
-                "Spectrum descends through real intermediate positions while controls retract");
-            WaitFor(() => Math.Abs(BottomBaseline(view) - view.ActualHeight) < .1, "The lower spectrum did not finish retracting");
+            var retractStarted = false; var retractFinished = false;
+            var intermediate = double.NaN; var retractFrames = 0;
+            // Start on a composition boundary and retain an actual intermediate
+            // frame. A later dispatcher poll must not erase a frame already observed.
+            EventHandler observeRetraction = (_, _) =>
+            {
+                if (!retractStarted)
+                {
+                    retractStarted = true;
+                    view.SetPlayerChrome(106, false, true);
+                    return;
+                }
+                retractFrames++;
+                var baseline = BottomBaseline(view);
+                if (double.IsNaN(intermediate) && baseline > view.ActualHeight - 106 && baseline < view.ActualHeight) intermediate = baseline;
+                retractFinished |= Math.Abs(baseline - view.ActualHeight) < .1;
+            };
+            CompositionTarget.Rendering += observeRetraction;
+            try
+            {
+                WaitFor(() => retractStarted, "The compositor did not start the retract animation");
+                if (SystemParameters.ClientAreaAnimation)
+                    WaitFor(() => double.IsFinite(intermediate) || retractFinished, "The compositor did not deliver an intermediate retract frame");
+                Check(!SystemParameters.ClientAreaAnimation || (intermediate > view.ActualHeight - 106 && intermediate < view.ActualHeight),
+                    "Spectrum descends through real intermediate positions while controls retract");
+                WaitFor(() => retractFinished, "The lower spectrum did not finish retracting");
+            }
+            finally { CompositionTarget.Rendering -= observeRetraction; }
+            Console.WriteLine($"RETRACT COMPOSITION: frames={retractFrames}, intermediate={intermediate:0.###}, start={view.ActualHeight - 106:0.###}, end={view.ActualHeight:0.###}");
             Check(Math.Abs(BottomBaseline(view) - view.ActualHeight) < .1, "Retracted player lets the spectrum reach the window boundary");
             Check(measuredHost.Measures == measuredBefore && measuredHost.Arranges == arrangedBefore,
                 "Spectrum displacement causes zero extra immersive measure/arrange passes");

@@ -95,6 +95,8 @@ powershell -ExecutionPolicy Bypass -File tools/package.ps1
 
 `tools/test.ps1` 运行登录、更新、媒体库、网络歌词与缓存、歌词、DLNA 协议、外观、动效、主题、频谱、滑块真实输入、后台播放、沉浸布局、内嵌设置、播放列表、返回导航、桌面歌词鼠标交互和整合界面检查；加上 `-IncludeMedia` 会同时运行媒体播放检查，共 19 组。单个检查项目也可使用上面的 `build.ps1 run` 命令运行。实体 DLNA 测试需另行显式指定目标设备，不包含在此测试集合中。
 
+原生界面检查会临时显示测试窗口并模拟鼠标输入，建议在空闲桌面或 CI 中运行。`-KeepGoing` 会收集所有失败后统一报告，任何一组失败仍会使整套检查失败。
+
 歌词渲染性能场景可单独运行 `tools/build.ps1 run --project tests/animated-lyrics/AnimatedLyricsChecks.csproj -c Release -- --performance`。它在布局稳定后记录 240 行逐字歌词的帧间隔、原生滚动次数、文本重排和重绘次数；性能数据用于观察当前设备上的表现，不作为固定帧率保证。
 
 `tools/build.ps1` 在 SDK 完整时直接调用 `dotnet`；检测到缺失的官方 targets 文件时，仅在项目的 `artifacts` 目录建立兼容覆盖，不修改系统 SDK。

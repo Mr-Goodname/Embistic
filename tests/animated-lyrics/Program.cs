@@ -1,5 +1,6 @@
 using System.IO;
 using System.Diagnostics;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
@@ -35,7 +36,8 @@ internal static class Program
                 Check(LyricScrollMath.CenterOffset(1800, 240, 500, 2000) == 1500, "Clamps the trailing edge");
                 Check(LyricScrollMath.CenterOffset(double.NaN, 100, 500, 2000) == 0, "Rejects invalid layout values");
                 Check(!LyricScrollMath.IsInViewport(0, 100, 200, 500) && LyricScrollMath.IsInViewport(150, 100, 200, 500), "Only intersecting rows qualify for animations");
-                var view = new AnimatedLyricsView();
+                var scrollTime = new ControlledScrollTime();
+                var view = new AnimatedLyricsView(scrollTime);
                 view.ApplyAppearance(new LyricAppearanceSettings { ScrollDurationMs = 1200, TransitionDurationMs = 1000 });
                 window = new Window { Content = view, Width = 640, Height = 600, Left = SystemParameters.WorkArea.Right - 650, Top = SystemParameters.WorkArea.Bottom - 610, WindowStartupLocation = WindowStartupLocation.Manual, ShowInTaskbar = false, ShowActivated = false, Opacity = .01, Background = new SolidColorBrush(Color.FromRgb(12, 16, 21)) };
                 window.Show();
@@ -46,17 +48,23 @@ internal static class Program
                 view.SetDocument(new LyricsDocument { IsSynced = true, Lines = lines, Source = "Animation fixture" });
                 view.UpdatePosition(0);
                 await Task.Delay(180);
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                scrollTime.Advance(TimeSpan.FromMilliseconds(1200));
+                await NextRenderFrameAsync(view);
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
                 var rows = (StackPanel)view.FindName("RowsPanel");
                 var scroller = (ScrollViewer)view.FindName("Scroller");
                 Check(rows.Children.Count == 24 && ((Button)rows.Children[2]).ActualHeight > ((Button)rows.Children[0]).ActualHeight, "Rows keep natural multi-line translation heights");
                 var before = view.CurrentScrollOffset;
                 var nativeBefore = scroller.VerticalOffset;
                 var rowBefore = ((Button)rows.Children[2]).TranslatePoint(new Point(), view).Y;
-                var scrollClock = Stopwatch.StartNew();
+                var scrollStarted = scrollTime.GetTimestamp();
                 view.UpdatePosition(10000);
                 var target = view.TargetScrollOffset;
                 Check(view.ActiveLineIndex == 2 && target > before + 100, "New active line targets its measured center");
                 Check(Math.Abs(view.CurrentScrollOffset - before) < 8, "A transition does not jump to its destination immediately");
+                scrollTime.Advance(TimeSpan.FromMilliseconds(160));
+                await NextRenderFrameAsync(view);
                 await Task.Delay(160);
                 Check(view.CurrentScrollOffset > before + 1 && view.CurrentScrollOffset < target - 1, $"Scroll offset progresses through intermediate values (from={before:F1}, current={view.CurrentScrollOffset:F1}, to={target:F1})");
                 Check(Math.Abs(scroller.VerticalOffset - nativeBefore) < .1 &&
@@ -70,24 +78,35 @@ internal static class Program
                 await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
                 Check(Math.Abs(view.TargetScrollOffset - target) < 1 && view.CurrentScrollOffset < target - 1,
                     $"Late height layout preserves the active scroll instead of snapping (current={view.CurrentScrollOffset:F1}, target={target:F1})");
-                await Task.Delay(400);
+                scrollTime.Advance(TimeSpan.FromMilliseconds(400));
+                await NextRenderFrameAsync(view);
                 var beforeWidthLayout = view.CurrentScrollOffset;
+                var reflowWallClock = Stopwatch.StartNew();
                 window.Width = 540;
+                if (Environment.GetCommandLineArgs().Contains("--slow-layout")) Thread.Sleep(2600);
                 window.UpdateLayout();
                 await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
                 var reflowTarget = view.TargetScrollOffset;
+                Console.WriteLine($"Layout fixture: WPF reflow wall time={reflowWallClock.Elapsed.TotalMilliseconds:F0}ms; controlled scroll time={scrollTime.GetElapsedTime(scrollStarted).TotalMilliseconds:F0}ms of the original 1200ms deadline.");
                 Check(Math.Abs(reflowTarget - target) > 1 && view.CurrentScrollOffset < reflowTarget - 1 && view.CurrentScrollOffset >= beforeWidthLayout - 2,
                     $"Late width layout retargets the wrapped line while retaining an intermediate scroll position (before={beforeWidthLayout:F1}, current={view.CurrentScrollOffset:F1}, oldTarget={target:F1}, target={reflowTarget:F1})");
                 target = reflowTarget;
                 view.UpdatePosition(10300);
-                await WaitUntilAsync(() => Math.Abs(view.CurrentScrollOffset - target) < .1, "Repeated ticks did not reach the retargeted scroll destination");
-                Check(scrollClock.Elapsed.TotalMilliseconds < 1400,
-                    $"Layout retargeting retains the original 1200ms animation deadline (elapsed={scrollClock.Elapsed.TotalMilliseconds:F0}ms)");
-                await Task.Delay(50);
+                scrollTime.Advance(TimeSpan.FromMilliseconds(639));
+                await NextRenderFrameAsync(view);
+                var stillMovingBeforeDeadline = ScrollIsMoving(view);
+                scrollTime.Advance(TimeSpan.FromMilliseconds(1));
+                await NextRenderFrameAsync(view);
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                Check(stillMovingBeforeDeadline && !ScrollIsMoving(view) && Math.Abs(view.CurrentScrollOffset - target) < .1
+                    && scrollTime.GetElapsedTime(scrollStarted) == TimeSpan.FromMilliseconds(1200),
+                    "Layout retargeting remains animated at 1199ms and reaches the new destination at the original 1200ms deadline");
+                var focusedScale = (ScaleTransform)((TransformGroup)focusedContent.RenderTransform).Children[0];
+                await WaitUntilAsync(() => focusedMain.Opacity == 1 && Math.Abs(focusedScale.ScaleX - 1.18) < .001,
+                    "Focus appearance did not complete its independent WPF animation");
                 Check(Math.Abs(view.CurrentScrollOffset - target) < 2, "Repeated ticks on one lyric do not restart scrolling");
                 Check(Math.Abs(scroller.VerticalOffset - target) < 2 && Math.Abs(((TranslateTransform)((StackPanel)view.FindName("LineHost")).RenderTransform).Y) < .1,
                     "Settled animation commits the native scroll offset and releases its render displacement");
-                var focusedScale = (ScaleTransform)((TransformGroup)focusedContent.RenderTransform).Children[0];
                 Check(Math.Abs(focusedScale.ScaleX - 1.18) < .001 && focusedMain.Opacity == 1, "Active lyric settles at the configured focus scale and opacity");
                 var neighbor = (StackPanel)((Button)rows.Children[3]).Content;
                 var distant = (StackPanel)((Button)rows.Children[6]).Content;
@@ -101,6 +120,7 @@ internal static class Program
                 await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
                 Check(view.ActiveLineIndex == 3 && view.CurrentScrollOffset < view.TargetScrollOffset - 1,
                     "A playback transition requested before row layout keeps its animation intent");
+                scrollTime.Resume();
                 await WaitUntilAsync(() => Math.Abs(view.CurrentScrollOffset - view.TargetScrollOffset) < .1, "Deferred playback transition did not reach its measured destination");
                 scroller.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
                 await Task.Delay(300);
@@ -149,7 +169,7 @@ internal static class Program
                 view.UpdatePlayback(1000, false);
                 Check(Math.Abs(view.InterpolatedPositionMs - 1000) < 1, "Seeking immediately rebases the playback clock");
                 CheckRetainedKaraoke();
-                if (Environment.GetCommandLineArgs().Skip(1).FirstOrDefault() is { } imagePath)
+                if (Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(argument => !argument.StartsWith("--", StringComparison.Ordinal)) is { } imagePath)
                 {
                     view.ApplyAppearance(new LyricAppearanceSettings());
                     view.UpdatePosition(10000);
@@ -175,6 +195,36 @@ internal static class Program
         if (!condition) throw new InvalidOperationException("FAIL: " + message);
         _passed++;
         Console.WriteLine("PASS: " + message);
+    }
+
+    private static bool ScrollIsMoving(AnimatedLyricsView view) =>
+        (bool)typeof(AnimatedLyricsView).GetField("_scrollMoving", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(view)!;
+
+    private static async Task NextRenderFrameAsync(AnimatedLyricsView view)
+    {
+        var previous = (TimeSpan)typeof(AnimatedLyricsView).GetField("_lastRenderingTime", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(view)!;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnRendering(object? sender, EventArgs args)
+        {
+            if (((RenderingEventArgs)args).RenderingTime > previous) completion.TrySetResult();
+        }
+        CompositionTarget.Rendering += OnRendering;
+        try { await completion.Task.WaitAsync(TimeSpan.FromSeconds(3)); }
+        finally { CompositionTarget.Rendering -= OnRendering; }
+    }
+
+    private sealed class ControlledScrollTime : TimeProvider
+    {
+        private long _timestamp, _resumedAt;
+        private bool _running;
+        public override long TimestampFrequency => Stopwatch.Frequency;
+        public override long GetTimestamp() => _timestamp + (_running ? Stopwatch.GetTimestamp() - _resumedAt : 0);
+        public void Advance(TimeSpan elapsed)
+        {
+            if (_running) throw new InvalidOperationException("The controlled scroll clock is already running in real time.");
+            _timestamp += (long)Math.Round(elapsed.TotalSeconds * Stopwatch.Frequency);
+        }
+        public void Resume() { _resumedAt = Stopwatch.GetTimestamp(); _running = true; }
     }
 
     private static void CheckRetainedKaraoke()
