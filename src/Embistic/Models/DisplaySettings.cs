@@ -10,6 +10,7 @@ public sealed class DisplaySettings
     public bool RememberVolume { get; set; } = true;
     public int StartupVolume { get; set; } = 45;
     public bool DiscAnimation { get; set; } = true;
+    public string CoverPresentation { get; set; } = "Vinyl";
     public List<RadioStation> RadioStations { get; set; } = new();
     public DisplaySettings Clone()
     {
@@ -17,7 +18,7 @@ public sealed class DisplaySettings
         {
             CompactTrackRows = CompactTrackRows, ShowSidebarPlayer = ShowSidebarPlayer,
             StartInLyrics = StartInLyrics, RememberVolume = RememberVolume,
-            StartupVolume = StartupVolume, DiscAnimation = DiscAnimation
+            StartupVolume = StartupVolume, DiscAnimation = DiscAnimation, CoverPresentation = CoverPresentation
         };
         if (LibraryCategories is not null) copy.LibraryCategories = new(LibraryCategories);
         if (HomeSections is not null) copy.HomeSections = new(HomeSections);
@@ -32,6 +33,7 @@ public sealed class DisplaySettings
         LibraryCategories = (LibraryCategories ?? defaults.LibraryCategories).Where(defaults.LibraryCategories.Contains).Distinct().ToList();
         HomeSections = (HomeSections ?? defaults.HomeSections).Where(defaults.HomeSections.Contains).Distinct().ToList();
         StartupVolume = Math.Clamp(StartupVolume, 0, 100);
+        CoverPresentation = CoverPresentation is "Circle" or "RoundedSquare" ? CoverPresentation : "Vinyl";
         RadioStations ??= new();
         RadioStations = RadioStations.Where(s => s is not null && !string.IsNullOrWhiteSpace(s.Name)
             && s.Url is { Length: <= 4096 } && Uri.TryCreate(s.Url, UriKind.Absolute, out var uri)

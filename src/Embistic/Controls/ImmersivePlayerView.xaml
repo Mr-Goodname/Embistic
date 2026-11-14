@@ -30,17 +30,15 @@
   </Style>
  </UserControl.Resources>
  <Grid x:Name="ImmersiveCanvas">
-  <Image x:Name="BackdropImage" Stretch="UniformToFill" Opacity=".25" Margin="-80" IsHitTestVisible="False">
-   <Image.Effect><BlurEffect Radius="48" RenderingBias="Performance"/></Image.Effect>
-  </Image>
+  <Image x:Name="BackdropImage" Stretch="UniformToFill" Opacity=".25" Margin="-80" IsHitTestVisible="False" RenderOptions.BitmapScalingMode="HighQuality"/>
   <Rectangle IsHitTestVisible="False"><Rectangle.Fill><SolidColorBrush x:Name="AlbumTint" Color="#244E6889"/></Rectangle.Fill></Rectangle>
   <Rectangle Fill="{DynamicResource Bg}" Opacity=".5" IsHitTestVisible="False"/>
   <Rectangle IsHitTestVisible="False" Opacity=".24">
    <Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#00FFFFFF"/><GradientStop Color="#00243954" Offset=".48"/><GradientStop Color="#80243954" Offset="1"/></LinearGradientBrush></Rectangle.Fill>
   </Rectangle>
   <Grid x:Name="SpectrumSection" ClipToBounds="True">
-   <controls:SpectrumView x:Name="SpectrumTop" VerticalAlignment="Top" RenderTransformOrigin=".5,.5"><controls:SpectrumView.RenderTransform><ScaleTransform ScaleY="-1"/></controls:SpectrumView.RenderTransform></controls:SpectrumView>
-   <controls:SpectrumView x:Name="ImmersiveSpectrum" VerticalAlignment="Bottom"/>
+   <controls:SpectrumView x:Name="SpectrumTop" VerticalAlignment="Top" RenderTransformOrigin=".5,.5"><controls:SpectrumView.RenderTransform><TransformGroup><ScaleTransform ScaleY="-1"/><TranslateTransform x:Name="TopSpectrumSlide"/></TransformGroup></controls:SpectrumView.RenderTransform></controls:SpectrumView>
+   <controls:SpectrumView x:Name="ImmersiveSpectrum" VerticalAlignment="Bottom"><controls:SpectrumView.RenderTransform><TranslateTransform x:Name="BottomSpectrumSlide"/></controls:SpectrumView.RenderTransform></controls:SpectrumView>
    <Border x:Name="SpectrumLeftHost" HorizontalAlignment="Left"><controls:SpectrumView x:Name="SpectrumLeft"><controls:SpectrumView.LayoutTransform><RotateTransform Angle="90"/></controls:SpectrumView.LayoutTransform></controls:SpectrumView></Border>
    <Border x:Name="SpectrumRightHost" HorizontalAlignment="Right"><controls:SpectrumView x:Name="SpectrumRight"><controls:SpectrumView.LayoutTransform><RotateTransform Angle="-90"/></controls:SpectrumView.LayoutTransform></controls:SpectrumView></Border>
   </Grid>
@@ -49,9 +47,9 @@
     <Grid.ColumnDefinitions><ColumnDefinition Width="0.41*"/><ColumnDefinition Width="0.59*"/></Grid.ColumnDefinitions>
     <Grid x:Name="RecordColumn" Margin="10,8,18,12">
      <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-     <Viewbox Stretch="Uniform" MaxWidth="480" MaxHeight="480" HorizontalAlignment="Center" VerticalAlignment="Center">
-      <Canvas Width="480" Height="480">
-       <Grid x:Name="DiscRotor" Width="430" Height="430" Canvas.Left="15" Canvas.Top="38" RenderTransformOrigin=".5,.5">
+     <Viewbox x:Name="CoverViewbox" Stretch="Uniform" MaxWidth="550" MaxHeight="550" HorizontalAlignment="Center" VerticalAlignment="Center">
+      <Canvas Width="550" Height="550">
+       <Grid x:Name="DiscRotor" Width="430" Height="430" Canvas.Left="60" Canvas.Top="60" RenderTransformOrigin=".5,.5">
         <Grid.RenderTransform><RotateTransform x:Name="DiscRotation"/></Grid.RenderTransform>
         <Grid.CacheMode><BitmapCache RenderAtScale="1.25"/></Grid.CacheMode>
         <Grid.Effect><DropShadowEffect BlurRadius="24" Color="#000000" Opacity=".42" ShadowDepth="5"/></Grid.Effect>
@@ -68,8 +66,18 @@
         <Ellipse Width="24" Height="24" Fill="#11151A" Stroke="#5A626C" StrokeThickness="1"/>
         <Ellipse Width="7" Height="7" Fill="#77828F"/>
        </Grid>
-       <Grid x:Name="SpectrumRingHost" Width="430" Height="430" Canvas.Left="15" Canvas.Top="38"><controls:SpectrumView x:Name="SpectrumRing" IsRadial="True"/></Grid>
-       <Canvas x:Name="NeedleCanvas" Width="480" Height="480" IsHitTestVisible="False">
+       <Grid x:Name="CircleCover" Width="430" Height="430" Canvas.Left="60" Canvas.Top="60" Visibility="Collapsed">
+        <Ellipse Fill="#25364B"/>
+        <TextBlock x:Name="CirclePlaceholder" Text="♪" FontSize="96" Foreground="#869DBB" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        <Ellipse><Ellipse.Fill><ImageBrush x:Name="CircleArtworkImage" Stretch="UniformToFill"/></Ellipse.Fill></Ellipse>
+       </Grid>
+       <Grid x:Name="RoundedCover" Width="430" Height="430" Canvas.Left="60" Canvas.Top="60" Visibility="Collapsed">
+        <Rectangle RadiusX="32" RadiusY="32" Fill="#25364B"/>
+        <TextBlock x:Name="RoundedPlaceholder" Text="♪" FontSize="96" Foreground="#869DBB" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        <Rectangle RadiusX="32" RadiusY="32"><Rectangle.Fill><ImageBrush x:Name="RoundedArtworkImage" Stretch="UniformToFill"/></Rectangle.Fill></Rectangle>
+       </Grid>
+       <Grid x:Name="SpectrumRingHost" Width="550" Height="550" Canvas.Left="0" Canvas.Top="0"><controls:SpectrumView x:Name="SpectrumRing" IsRadial="True" RadialInset="52" RadialCornerRadius="40"/></Grid>
+       <Canvas x:Name="NeedleCanvas" Width="480" Height="480" Canvas.Left="45" Canvas.Top="22" IsHitTestVisible="False">
         <Canvas.RenderTransform><RotateTransform x:Name="NeedleRotation" CenterX="382" CenterY="40" Angle="-13"/></Canvas.RenderTransform>
         <Ellipse Width="34" Height="34" Canvas.Left="365" Canvas.Top="23" Fill="#65778F" Opacity=".45"/>
         <Ellipse Width="23" Height="23" Canvas.Left="370.5" Canvas.Top="28.5" Fill="#DEE5EE" Stroke="#B8C2D0" StrokeThickness="1"/>
@@ -86,11 +94,21 @@
       <TextBlock x:Name="TrackArtist" Text="从你的音乐库开始" Foreground="{DynamicResource SecondaryText}" FontSize="14" TextTrimming="CharacterEllipsis" TextAlignment="Center" Margin="0,9,0,0"/>
       <TextBlock x:Name="TrackQuality" Text="EMBY MUSIC" Foreground="{DynamicResource Muted}" FontSize="11" TextAlignment="Center" Margin="0,13,0,0"/>
      </StackPanel>
+     <Border x:Name="SettingsPanelSurface" Grid.RowSpan="2" Visibility="Collapsed" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="14" Margin="0,92,0,100" Padding="16,12,16,16">
+      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+       <Grid Margin="0,0,0,10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <StackPanel VerticalAlignment="Center"><TextBlock x:Name="SettingsPanelTitle" Text="歌词设置" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="修改即时保存，右侧实时预览" FontSize="11" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/></StackPanel>
+        <Button Grid.Column="1" Content="&#xE711;" FontFamily="Segoe Fluent Icons" Style="{StaticResource GlassButton}" Padding="9" Click="CloseSettings_Click" ToolTip="收起设置" AutomationProperties.Name="收起歌词设置"/>
+       </Grid>
+       <ContentControl x:Name="SettingsPanelContent" Grid.Row="1" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/>
+      </Grid>
+     </Border>
     </Grid>
     <Border Grid.Column="1" Margin="0,0,6,0" Background="Transparent"><controls:AnimatedLyricsView x:Name="ImmersiveLyrics"/></Border>
    </Grid>
   </Grid>
   <Grid x:Name="TopOptions" Margin="25,56,25,0" VerticalAlignment="Top">
+    <Grid.RenderTransform><TranslateTransform x:Name="TopOptionsSlide"/></Grid.RenderTransform>
     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
     <StackPanel Orientation="Horizontal">
      <Button x:Name="BackButton" Style="{StaticResource GlassButton}" Click="Back_Click" AutomationProperties.Name="退出沉浸歌词" ToolTip="返回音乐库">
@@ -105,15 +123,10 @@
      <Button x:Name="SpectrumButton" Style="{StaticResource GlassButton}" Click="SpectrumSettings_Click" AutomationProperties.Name="频谱样式" Margin="0,0,8,0">
       <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE9D9;" FontFamily="Segoe Fluent Icons" Margin="0,0,8,0"/><TextBlock Text="频谱样式"/></StackPanel>
      </Button>
-     <Button x:Name="OptionsButton" Style="{StaticResource GlassButton}" Click="Options_Click" AutomationProperties.Name="歌词选项">
-      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe Fluent Icons" Margin="0,0,8,0"/><TextBlock Text="歌词选项"/><TextBlock Text="⌄" Margin="8,0,0,0"/></StackPanel>
+     <Button x:Name="OptionsButton" Style="{StaticResource GlassButton}" Click="LyricsSettings_Click" AutomationProperties.Name="歌词设置">
+      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe Fluent Icons" Margin="0,0,8,0"/><TextBlock Text="歌词设置"/></StackPanel>
      </Button>
     </StackPanel>
-    <Popup x:Name="OptionsPopup" PlacementTarget="{Binding ElementName=OptionsButton}" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
-     <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="12" Padding="8" Width="222" Margin="0,8,0,0">
-      <StackPanel><Button Content="歌词样式与动效" Click="LyricsSettings_Click" Style="{StaticResource OptionButton}"/><Button Content="导入本地 LRC" Click="ImportLyrics_Click" Style="{StaticResource OptionButton}"/><Button Content="显示 / 隐藏桌面歌词" Click="DesktopLyrics_Click" Style="{StaticResource OptionButton}"/><Separator Margin="5,8"/><TextBlock Text="歌词时间偏移" Foreground="{DynamicResource Muted}" FontSize="11" Margin="12,4"/><TextBlock x:Name="OffsetLabel" Text="0 ms" HorizontalAlignment="Center" Margin="0,5,0,8"/><UniformGrid Columns="3"><Button x:Name="OffsetEarlierButton" Content="−250" Click="OffsetEarlier_Click" Style="{StaticResource GlassButton}" Padding="6,8" ToolTip="歌词提前 250 毫秒"/><Button x:Name="OffsetResetButton" Content="重置" Click="OffsetReset_Click" Style="{StaticResource GlassButton}" Padding="6,8"/><Button x:Name="OffsetLaterButton" Content="+250" Click="OffsetLater_Click" Style="{StaticResource GlassButton}" Padding="6,8" ToolTip="歌词延后 250 毫秒"/></UniformGrid></StackPanel>
-     </Border>
-    </Popup>
    </Grid>
   <Border x:Name="SpectrumStatusSurface" Background="{DynamicResource Panel}" CornerRadius="10" Padding="12,7" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,126" Visibility="Collapsed" Opacity=".85">
    <TextBlock x:Name="SpectrumStatusText" Foreground="{DynamicResource Muted}" FontSize="11" TextAlignment="Center" MaxWidth="720" TextWrapping="Wrap"/>

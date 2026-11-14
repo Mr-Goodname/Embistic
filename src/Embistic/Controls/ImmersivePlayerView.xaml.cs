@@ -21,6 +21,7 @@ public partial class ImmersivePlayerView : UserControl
     private SpectrumSettings _spectrumSettings = new();
     private bool _playing, _rotating;
     private bool _discAnimationEnabled = true;
+    private string _coverPresentation = "Vinyl";
     private double _needleTarget = -13;
     private int _coverVersion;
     private Color _coverColor = Color.FromRgb(80, 111, 152);
@@ -36,7 +37,19 @@ public partial class ImmersivePlayerView : UserControl
 
     public AnimatedLyricsView LyricsView => ImmersiveLyrics;
     public SpectrumView Spectrum => ImmersiveSpectrum;
-    public bool HasOpenMenu => OptionsPopup.IsOpen || _spectra.Any(view => view.ContextMenu?.IsOpen == true);
+    public bool IsSettingsPanelOpen => SettingsPanelSurface.Visibility == Visibility.Visible;
+    public bool HasOpenMenu => IsSettingsPanelOpen || _spectra.Any(view => view.ContextMenu?.IsOpen == true);
+    public string CoverPresentation
+    {
+        get => _coverPresentation;
+        set
+        {
+            var normalized = value is "Circle" or "RoundedSquare" ? value : "Vinyl";
+            if (_coverPresentation == normalized) return;
+            _coverPresentation = normalized;
+            ApplyCoverPresentation();
+        }
+    }
     public string SpectrumStatus { get => SpectrumStatusText.Text; set => SetSpectrumStatus(value); }
     public bool DiscAnimationEnabled
     {
@@ -51,6 +64,7 @@ public partial class ImmersivePlayerView : UserControl
     public event Action? DesktopLyricsRequested;
     public event Action<double>? OffsetChangeRequested;
     public event Action? OffsetResetRequested;
+    public event Action? SettingsPanelClosed;
 
     // The capture callback runs on WASAPI's worker thread. SpectrumView owns
     // the thread-safe handoff; do not inspect visibility or dependency properties here.
@@ -63,7 +77,36 @@ public partial class ImmersivePlayerView : UserControl
         _spectrumPlaying = playing;
         foreach (var view in _spectra) view.IsPlaying = playing && _spectrumSettings.Enabled;
     }
-    public void SetLyricsOffset(double milliseconds) => OffsetLabel.Text = $"{milliseconds:+0;-0;0} ms";
+    public double LyricsOffset { get; private set; }
+    public void SetLyricsOffset(double milliseconds) => LyricsOffset = milliseconds;
+
+    public void ShowSettingsPanel(UIElement content, string? title = null)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        SettingsPanelTitle.Text = title ?? "歌词设置";
+        SettingsPanelContent.Content = content;
+        SettingsPanelSurface.Visibility = Visibility.Visible;
+        CoverViewbox.Visibility = Visibility.Hidden;
+        ShowOptions();
+        SyncMotion();
+    }
+
+    public void HideSettingsPanel()
+    {
+        if (!IsSettingsPanelOpen) return;
+        SettingsPanelSurface.Visibility = Visibility.Collapsed;
+        SettingsPanelContent.Content = null;
+        CoverViewbox.Visibility = Visibility.Visible;
+        SyncMotion();
+        SettingsPanelClosed?.Invoke();
+    }
+
+    // The spectrum and player share the same timing curve. Only render transforms
+    // change during motion, so no lyric measurements or layouts are invalidated.
+    public void SetPlayerChrome(double height, bool visible, bool animate = true)
+    {
+        AnimateSlide(BottomSpectrumSlide, visible ? -Math.Max(0, height) : 0, animate);
+    }
 
     public ImmersivePlayerView()
     {
@@ -81,18 +124,17 @@ public partial class ImmersivePlayerView : UserControl
         PreviewMouseMove += (_, _) => UpdateOptionsVisibility();
         PreviewKeyDown += (_, _) => { _optionsKeyboardInteraction = true; ShowOptions(); };
         PreviewMouseDown += (_, _) => _optionsKeyboardInteraction = false;
-        OptionsPopup.Child.PreviewKeyDown += (_, _) => _optionsKeyboardInteraction = true;
-        OptionsPopup.Child.PreviewMouseDown += (_, _) => _optionsKeyboardInteraction = false;
-        OptionsPopup.Opened += (_, _) => ShowOptions();
-        Loaded += (_, _) => { UpdateTint(); SyncMotion(); ShowOptions(); if (IsVisible) _optionsTimer.Start(); };
-        Unloaded += (_, _) => { OptionsPopup.IsOpen = false; StopRotation(); _optionsTimer.Stop(); _statusTimer.Stop(); };
+        TopOptions.SizeChanged += (_, _) => SyncTopSpectrum(false);
+        Loaded += (_, _) => { UpdateTint(); SyncMotion(); ShowOptions(); SyncTopSpectrum(false); if (IsVisible) _optionsTimer.Start(); };
+        Unloaded += (_, _) => { StopRotation(); _optionsTimer.Stop(); _statusTimer.Stop(); };
         IsVisibleChanged += (_, _) =>
         {
-            if (!IsVisible) { OptionsPopup.IsOpen = false; SyncMotion(); _optionsTimer.Stop(); }
+            if (!IsVisible) { HideSettingsPanel(); SyncMotion(); _optionsTimer.Stop(); }
             else { ApplyAppearance(_appearance); ShowOptions(); _optionsTimer.Start(); }
         };
         ApplyAppearance(_appearance);
         ApplySpectrum(_spectrumSettings);
+        ApplyCoverPresentation();
     }
 
     public void SetTrack(Track? track)
@@ -125,14 +167,15 @@ public partial class ImmersivePlayerView : UserControl
             catch { /* The native record placeholder remains available. */ }
         }
         RecordLabelImage.ImageSource = artwork;
-        BackdropImage.Source = artwork;
-        RecordPlaceholder.Visibility = artwork is null ? Visibility.Visible : Visibility.Collapsed;
+        CircleArtworkImage.ImageSource = RoundedArtworkImage.ImageSource = artwork;
+        BackdropImage.Source = null;
+        SetPlaceholderVisible(artwork is null);
         if (artwork is BitmapImage downloading && downloading.IsDownloading)
         {
             _loadingArtwork = downloading;
             _downloadHandler = (_, _) =>
             {
-                if (version == _coverVersion) { RecordPlaceholder.Visibility = Visibility.Collapsed; ReadCoverColor(downloading); }
+                if (version == _coverVersion) { SetPlaceholderVisible(false); ReadCoverColor(downloading); }
                 DetachArtworkHandler();
             };
             downloading.DownloadCompleted += _downloadHandler;
@@ -166,7 +209,6 @@ public partial class ImmersivePlayerView : UserControl
         }
         ImmersiveLyrics.ApplyAppearance(displayed);
         TrackTitle.FontFamily = TrackArtist.FontFamily = new FontFamily(_appearance.FontFamily);
-        OptionsPopup.PopupAnimation = _appearance.AnimationsEnabled ? System.Windows.Controls.Primitives.PopupAnimation.Fade : System.Windows.Controls.Primitives.PopupAnimation.None;
         if (!_appearance.AnimationsEnabled)
         {
             NeedleRotation.BeginAnimation(RotateTransform.AngleProperty, null);
@@ -188,8 +230,23 @@ public partial class ImmersivePlayerView : UserControl
         SpectrumRightHost.Visibility = Visible(_spectrumSettings.Enabled && _spectrumSettings.ShowRight);
         SpectrumLeftHost.Width = SpectrumRightHost.Width = _spectrumSettings.Height;
         SpectrumRingHost.Visibility = Visible(_spectrumSettings.Enabled && _spectrumSettings.ShowRing);
-        NeedleCanvas.Visibility = Visible(!_spectrumSettings.ShowRing);
+        ApplyCoverPresentation();
         SetSpectrumPlaying(_spectrumPlaying);
+    }
+
+    private void ApplyCoverPresentation()
+    {
+        DiscRotor.Visibility = Visible(_coverPresentation == "Vinyl");
+        CircleCover.Visibility = Visible(_coverPresentation == "Circle");
+        RoundedCover.Visibility = Visible(_coverPresentation == "RoundedSquare");
+        NeedleCanvas.Visibility = Visible(_coverPresentation == "Vinyl");
+        SpectrumRing.RadialShape = _coverPresentation == "RoundedSquare" ? "RoundedSquare" : "Circle";
+        SyncMotion();
+    }
+
+    private void SetPlaceholderVisible(bool visible)
+    {
+        RecordPlaceholder.Visibility = CirclePlaceholder.Visibility = RoundedPlaceholder.Visibility = Visible(visible);
     }
 
     public void SetSpectrumStatus(string? text)
@@ -223,7 +280,24 @@ public partial class ImmersivePlayerView : UserControl
         TopOptions.Opacity = visible ? 1 : 0;
         TopOptions.IsHitTestVisible = visible;
         if (_appearance.AnimationsEnabled && SystemParameters.ClientAreaAnimation)
-            TopOptions.BeginAnimation(OpacityProperty, new DoubleAnimation(previous, visible ? 1 : 0, TimeSpan.FromMilliseconds(180)) { FillBehavior = FillBehavior.Stop });
+            TopOptions.BeginAnimation(OpacityProperty, new DoubleAnimation(previous, visible ? 1 : 0, TimeSpan.FromMilliseconds(220)) { FillBehavior = FillBehavior.Stop });
+        AnimateSlide(TopOptionsSlide, visible ? 0 : -TopOptions.Margin.Top - TopOptions.ActualHeight - 8, true);
+        SyncTopSpectrum(true);
+    }
+
+    private void SyncTopSpectrum(bool animate) =>
+        AnimateSlide(TopSpectrumSlide, _optionsShown ? TopOptions.Margin.Top + TopOptions.ActualHeight + 10 : 0, animate);
+
+    private void AnimateSlide(TranslateTransform transform, double target, bool animate)
+    {
+        var current = transform.Y;
+        if (Math.Abs(current - target) < .01 && !transform.HasAnimatedProperties) return;
+        transform.BeginAnimation(TranslateTransform.YProperty, null);
+        transform.Y = target;
+        if (animate && _appearance.AnimationsEnabled && SystemParameters.ClientAreaAnimation)
+            transform.BeginAnimation(TranslateTransform.YProperty,
+                new DoubleAnimation(current, target, TimeSpan.FromMilliseconds(220))
+                { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop });
     }
 
     private void ReadCoverColor(BitmapSource artwork)
@@ -231,7 +305,11 @@ public partial class ImmersivePlayerView : UserControl
         try
         {
             if (artwork.PixelWidth < 1 || artwork.PixelHeight < 1) return;
-            var converted = new FormatConvertedBitmap(artwork, PixelFormats.Bgra32, null, 0);
+            // Decode and blur once per cover at thumbnail resolution. A full-window
+            // BlurEffect used an extra large GPU surface on every composition frame.
+            var scale = Math.Min(1, 96d / Math.Max(artwork.PixelWidth, artwork.PixelHeight));
+            var reduced = new TransformedBitmap(artwork, new ScaleTransform(scale, scale));
+            var converted = new FormatConvertedBitmap(reduced, PixelFormats.Bgra32, null, 0);
             var stride = converted.PixelWidth * 4;
             var pixels = new byte[stride * converted.PixelHeight];
             converted.CopyPixels(pixels, stride, 0);
@@ -247,9 +325,41 @@ public partial class ImmersivePlayerView : UserControl
                     red += r * weight; green += g * weight; blue += b * weight; total += weight;
                 }
             if (total > 0) _coverColor = Color.FromRgb((byte)(red / total), (byte)(green / total), (byte)(blue / total));
+            var blurred = BlurThumbnail(pixels, converted.PixelWidth, converted.PixelHeight);
+            var backdrop = BitmapSource.Create(converted.PixelWidth, converted.PixelHeight, 96, 96, PixelFormats.Bgra32, null, blurred, stride);
+            backdrop.Freeze();
+            BackdropImage.Source = backdrop;
             UpdateTint();
         }
         catch { /* A failed or unsupported image cannot affect playback. */ }
+    }
+
+    private static byte[] BlurThumbnail(byte[] pixels, int width, int height)
+    {
+        const int radius = 5;
+        var scratch = new byte[pixels.Length];
+        for (var pass = 0; pass < 3; pass++)
+        {
+            for (var y = 0; y < height; y++)
+                for (var x = 0; x < width; x++)
+                    for (var channel = 0; channel < 4; channel++)
+                    {
+                        var sum = 0;
+                        for (var offset = -radius; offset <= radius; offset++)
+                            sum += pixels[(y * width + Math.Clamp(x + offset, 0, width - 1)) * 4 + channel];
+                        scratch[(y * width + x) * 4 + channel] = (byte)(sum / (radius * 2 + 1));
+                    }
+            for (var y = 0; y < height; y++)
+                for (var x = 0; x < width; x++)
+                    for (var channel = 0; channel < 4; channel++)
+                    {
+                        var sum = 0;
+                        for (var offset = -radius; offset <= radius; offset++)
+                            sum += scratch[(Math.Clamp(y + offset, 0, height - 1) * width + x) * 4 + channel];
+                        pixels[(y * width + x) * 4 + channel] = (byte)(sum / (radius * 2 + 1));
+                    }
+        }
+        return pixels;
     }
 
     private void UpdateTint()
@@ -272,7 +382,7 @@ public partial class ImmersivePlayerView : UserControl
             NeedleRotation.BeginAnimation(RotateTransform.AngleProperty, null);
             NeedleRotation.Angle = _needleTarget;
         }
-        var enabled = IsVisible && _track is not null && _playing && _discAnimationEnabled && SystemParameters.ClientAreaAnimation;
+        var enabled = IsVisible && !IsSettingsPanelOpen && _coverPresentation == "Vinyl" && _track is not null && _playing && _discAnimationEnabled && SystemParameters.ClientAreaAnimation;
         if (enabled != _rotating)
         {
             if (enabled)
@@ -317,11 +427,11 @@ public partial class ImmersivePlayerView : UserControl
 
     private void Back_Click(object sender, RoutedEventArgs e) => BackRequested?.Invoke();
     private void Fullscreen_Click(object sender, RoutedEventArgs e) => FullscreenRequested?.Invoke();
-    private void Options_Click(object sender, RoutedEventArgs e) => OptionsPopup.IsOpen = !OptionsPopup.IsOpen;
-    private void LyricsSettings_Click(object sender, RoutedEventArgs e) { OptionsPopup.IsOpen = false; LyricsSettingsRequested?.Invoke(); }
+    private void LyricsSettings_Click(object sender, RoutedEventArgs e) => LyricsSettingsRequested?.Invoke();
+    private void CloseSettings_Click(object sender, RoutedEventArgs e) => HideSettingsPanel();
     private void SpectrumSettings_Click(object sender, RoutedEventArgs e) => SpectrumSettingsRequested?.Invoke();
-    private void ImportLyrics_Click(object sender, RoutedEventArgs e) { OptionsPopup.IsOpen = false; ImportLyricsRequested?.Invoke(); }
-    private void DesktopLyrics_Click(object sender, RoutedEventArgs e) { OptionsPopup.IsOpen = false; DesktopLyricsRequested?.Invoke(); }
+    private void ImportLyrics_Click(object sender, RoutedEventArgs e) => ImportLyricsRequested?.Invoke();
+    private void DesktopLyrics_Click(object sender, RoutedEventArgs e) => DesktopLyricsRequested?.Invoke();
     private void OffsetEarlier_Click(object sender, RoutedEventArgs e) => OffsetChangeRequested?.Invoke(-250);
     private void OffsetLater_Click(object sender, RoutedEventArgs e) => OffsetChangeRequested?.Invoke(250);
     private void OffsetReset_Click(object sender, RoutedEventArgs e) => OffsetResetRequested?.Invoke();

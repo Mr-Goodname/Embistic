@@ -100,8 +100,15 @@ internal static class Program
         slider.ApplyTemplate();
         _host.UpdateLayout(); slider.UpdateLayout();
         var hwnd = new WindowInteropHelper(_host).Handle;
-        SetForegroundWindow(hwnd);
+        // Windows may deny a background process's SetForegroundWindow request.
+        // Activate through delivered native input on this fixture's empty padding,
+        // exactly as a user would, before sending any slider or keyboard input.
+        var initialValue = slider.Value;
+        MovePointer(content.PointToScreen(new Point(8, 8)));
+        SendMouse(0x0002); SendMouse(0x0004);
         WaitFor(() => GetForegroundWindow() == hwnd, "Fixture window did not become foreground");
+        if (slider.Value != initialValue || Mouse.Captured is not null)
+            throw new InvalidOperationException("Fixture activation clicked outside the reserved padding.");
     }
 
     private static void TestHorizontal(double scale)

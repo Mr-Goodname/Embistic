@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -9,7 +10,6 @@ using System.Windows.Threading;
 using Embistic.Controls;
 using Embistic.Models;
 using Embistic.Services;
-using Embistic.Views;
 using NAudio.Wave;
 
 internal static class Program
@@ -23,6 +23,7 @@ internal static class Program
             TestFft();
             TestSettings();
             TestCurvesAndMotion();
+            MeasureCurveWorkload();
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
             app.Resources["Bg"] = new SolidColorBrush(Color.FromRgb(12, 16, 21));
             app.Resources["Panel"] = new SolidColorBrush(Color.FromRgb(19, 25, 32));
@@ -33,6 +34,7 @@ internal static class Program
             app.Resources["Muted"] = Brushes.LightSlateGray;
             app.Resources["AccentText"] = Brushes.Black;
             TestView();
+            TestMultiViewCadence();
             TestEditor();
             app.Shutdown();
             Console.WriteLine($"PASS: {_checks} real PCM, FFT, native render and spectrum editor checks.");
@@ -125,6 +127,15 @@ internal static class Program
         var bands = new float[64];
         SpectrumBandMath.Map(bins, 48000, new SpectrumSettings(), bands);
         Check(bands.Max() > .5 && bands.All(value => value is >= 0 and <= 1), "Log bands respond to actual FFT magnitude within normalized bounds");
+        var mappedBefore = SpectrumBandMath.SharedMappingCount;
+        var shared = new float[64]; var spectrum = new SpectrumSettings();
+        for (var placement = 0; placement < 5; placement++) SpectrumBandMath.MapShared(bins, 48000, spectrum, shared);
+        Check(SpectrumBandMath.SharedMappingCount - mappedBefore == 1 && shared.SequenceEqual(bands),
+            "Five placements share one FFT mapping without changing measured amplitudes");
+        spectrum.Gain = .25;
+        SpectrumBandMath.MapShared(bins, 48000, spectrum, shared);
+        Check(SpectrumBandMath.SharedMappingCount - mappedBefore == 2 && shared.Max() < bands.Max(),
+            "Shared mapping respects live changes to the frequency response");
     }
 
     private static void TestCurvesAndMotion()
@@ -182,6 +193,8 @@ internal static class Program
         Check(SameDirection(ringPath.Figures[0].StartPoint - ringPoints[^2], ringPoints[0] - ringPath.Figures[0].StartPoint),
             "Closed radial curve has a smooth seam");
 
+        TestCoverContours();
+
         var fastBlend = SpectrumMotionMath.Blend(1.0 / 60, 0);
         Check(fastBlend is > 0 and < 1, "Zero response smoothing still interpolates between FFT packets");
         foreach (var smoothing in new[] { 0.0, .65, .95 })
@@ -191,6 +204,34 @@ internal static class Program
             Check(Math.Abs(whole - (1 - (1 - half) * (1 - half))) < .000001,
                 $"Response timing remains equal at 30 and 60 fps for smoothing {smoothing}");
         }
+    }
+
+    private static void TestCoverContours()
+    {
+        var buffer = new SpectrumCurveBuffer();
+        var amplitudes = Enumerable.Repeat(.7f, 192).ToArray();
+        var center = new Point(275, 275);
+        var circle = buffer.Radial(amplitudes, center, 223, 271, true);
+        Check(!circle.FillContains(new Point(275, 61)) && circle.FillContains(new Point(275, 40)),
+            "Vinyl ring begins beyond the full 430px record and leaves its grooves uncovered");
+        var rounded = buffer.Radial(amplitudes, center, 223, 271, true, "RoundedSquare", 40);
+        var cover = new RectangleGeometry(new Rect(60, 60, 430, 430), 32, 32);
+        var uncovered = true;
+        for (var y = 60; y <= 490; y += 5)
+            for (var x = 60; x <= 490; x += 5)
+                if (cover.FillContains(new Point(x, y))) uncovered &= !rounded.FillContains(new Point(x, y));
+        Check(uncovered && rounded.FillContains(new Point(275, 35)) && rounded.FillContains(new Point(35, 275)),
+            "Rounded-square spectrum follows all four sides without filling over the cover");
+        var outline = PathGeometry.CreateFromGeometry(rounded).Figures[0]; var points = BezierPoints(outline);
+        Check(SameDirection(outline.StartPoint - points[^2], points[0] - outline.StartPoint),
+            "Rounded-square spectrum has a continuous closed seam");
+        var maxNormalError = 0d;
+        for (var i = 0; i < buffer.Contour.Count; i++)
+        {
+            var sample = buffer.Contour[i];
+            maxNormalError = Math.Max(maxNormalError, Math.Abs(Vector.Multiply(sample.Normal, sample.Tangent)) + Math.Abs(sample.Normal.Length - 1));
+        }
+        Check(maxNormalError < .000001, "Rounded-cover bars extend perpendicular to the cover outline");
     }
 
     private static List<Point> BezierPoints(PathFigure figure)
@@ -203,6 +244,30 @@ internal static class Program
             else throw new Exception("Curve unexpectedly contains " + segment.GetType().Name);
         }
         return points;
+    }
+
+    private static void MeasureCurveWorkload()
+    {
+        var bands = Enumerable.Range(0, 192).Select(i => (float)(.5 + .4 * Math.Sin(i * .31))).ToArray();
+        var timings = new double[360];
+        var curves = Enumerable.Range(0, 5).Select(_ => new SpectrumCurveBuffer()).ToArray();
+        for (var warmup = 0; warmup < 20; warmup++)
+        {
+            for (var edge = 0; edge < 4; edge++) curves[edge].Cartesian(bands, 1200, 140, false);
+            curves[4].Radial(bands, new Point(275, 275), 223, 271, false);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread();
+        for (var frame = 0; frame < timings.Length; frame++)
+        {
+            var started = Stopwatch.GetTimestamp();
+            for (var edge = 0; edge < 4; edge++) curves[edge].Cartesian(bands, 1200, 140, false);
+            curves[4].Radial(bands, new Point(275, 275), 223, 271, false);
+            timings[frame] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        }
+        var bytes = GC.GetAllocatedBytesForCurrentThread() - allocated;
+        Array.Sort(timings);
+        Console.WriteLine($"PERF five 192-band curves: median={timings[timings.Length / 2]:F3}ms p95={timings[(int)(timings.Length * .95)]:F3}ms allocation={bytes / timings.Length:N0} bytes/frame");
+        Check(bytes / timings.Length < 125000, "Five maximum-band curve views reuse their convolution, contour and interpolation buffers");
     }
 
     private static bool SameDirection(Vector left, Vector right)
@@ -225,6 +290,10 @@ internal static class Program
         var bins = new float[1025]; bins[16] = .5f;
         view.IsPlaying = true; view.SetSpectrum(bins); Pump(120);
         Check(view.DisplayedBands.Max() > .35 && view.RenderedFrameCount > 0, "Native view renders captured FFT frames");
+        var wakeDispatches = view.WakeDispatchCount;
+        Task.Run(() => { for (var packet = 0; packet < 1000; packet++) view.SetSpectrum(bins); }).GetAwaiter().GetResult();
+        Pump(40);
+        Check(view.WakeDispatchCount == wakeDispatches, "Active composition consumes packet bursts without posting per-packet UI work");
         foreach (var mode in new[] { "Bars", "Mirror", "Wave", "Line" })
         {
             view.ApplySettings(new SpectrumSettings { Mode = mode, GlowEnabled = mode == "Wave", PeakHold = true });
@@ -242,6 +311,15 @@ internal static class Program
             bitmap.Render(view);
             Check(bitmap.PixelHeight == 170 && view.DisplayedBands.Max() > .35, $"Native radial {mode} draws actual bands and honors container sizing");
         }
+        view.RadialShape = "RoundedSquare"; view.RadialInset = 20; view.RadialCornerRadius = 16;
+        foreach (var mode in new[] { "Bars", "Mirror", "Wave", "Line" })
+        {
+            view.ApplySettings(new SpectrumSettings { Mode = mode, Smoothing = 0, FrameRate = 144, PeakHold = true });
+            view.SetSpectrum(bins); Pump(40);
+            var bitmap = new RenderTargetBitmap((int)view.ActualWidth, (int)view.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(view);
+            Check(bitmap.PixelHeight == 170, $"Native rounded-square {mode} honors outward contour sizing");
+        }
         view.IsPlaying = false;
         view.IsPlaying = true; view.SetSpectrum(bins);
         var fastFrames = view.RenderedFrameCount; Pump(35);
@@ -249,8 +327,11 @@ internal static class Program
         Check(view.RenderedFrameCount - fastFrames >= 3 && view.DisplayedBands.Max() > firstResponse,
             "Low-smoothing view continues drawing intermediate composition frames between FFT updates");
         view.Visibility = Visibility.Collapsed;
+        wakeDispatches = view.WakeDispatchCount;
+        Task.Run(() => { for (var packet = 0; packet < 1000; packet++) view.SetSpectrum(bins); }).GetAwaiter().GetResult();
         var hiddenFrames = view.RenderedFrameCount; Pump(90);
         Check(!view.IsRendering && view.RenderedFrameCount == hiddenFrames, "Hidden view unsubscribes from composition without background redraws");
+        Check(view.WakeDispatchCount == wakeDispatches, "Hidden placements receive capture data without scheduling UI callbacks");
         view.Visibility = Visibility.Visible; Pump(35);
         Check(view.IsRendering, "Showing a playing spectrum resumes composition frames");
         view.IsPlaying = false;
@@ -261,46 +342,121 @@ internal static class Program
         Check(requested == 1, "Spectrum context menu requests real settings window");
         view.IsPlaying = true; view.SetSpectrum(bins); Pump(25); host.Close(); Pump(40);
         Check(!view.IsRendering, "Unloaded view releases the global composition subscription");
+        TestSilentWake();
+    }
+
+    private static void TestSilentWake()
+    {
+        var view = new SpectrumView(); view.ApplySettings(new SpectrumSettings { Smoothing = 0 });
+        var host = new Window { Content = view, Width = 450, Height = 160, Left = -9000, Top = -9000, ShowActivated = false, ShowInTaskbar = false };
+        host.Show(); view.IsPlaying = true; view.SetSpectrum(new float[1025]); Pump(650);
+        Check(!view.IsRendering, "A silent visible spectrum sleeps after its last captured packet");
+        var wakeDispatches = view.WakeDispatchCount; var bins = new float[1025]; bins[16] = .5f;
+        Task.Run(() => { for (var packet = 0; packet < 1000; packet++) view.SetSpectrum(bins); }).GetAwaiter().GetResult();
+        Check(view.WakeDispatchCount == wakeDispatches + 1, "A packet burst queues only one wake for a sleeping visible spectrum");
+        Pump(80);
+        Check(view.IsRendering && view.DisplayedBands.Max() > .35, "New audio wakes a sleeping spectrum and resumes real output");
+        host.Close();
+    }
+
+    private static void TestMultiViewCadence()
+    {
+        var grid = new Grid();
+        var views = Enumerable.Range(0, 5).Select(_ => new SpectrumView()).ToArray();
+        foreach (var view in views)
+        {
+            view.ApplySettings(new SpectrumSettings { Mode = "Line", BarCount = 192, Smoothing = 0, FrameRate = 60 });
+            view.IsPlaying = true; grid.Children.Add(view);
+        }
+        views[0].VerticalAlignment = VerticalAlignment.Top;
+        views[1].VerticalAlignment = VerticalAlignment.Bottom;
+        views[2].HorizontalAlignment = HorizontalAlignment.Left;
+        views[2].LayoutTransform = new RotateTransform(90);
+        views[3].HorizontalAlignment = HorizontalAlignment.Right;
+        views[3].LayoutTransform = new RotateTransform(-90);
+        views[4].IsRadial = true; views[4].Width = views[4].Height = 550;
+        views[4].RadialInset = 52; views[4].RadialShape = "RoundedSquare"; views[4].RadialCornerRadius = 40;
+        var host = new Window { Content = grid, Width = 1200, Height = 740, Left = -9000, Top = -9000, ShowActivated = false, ShowInTaskbar = false };
+        var format = WaveFormat.CreateIeeeFloatWaveFormat(48000, 2);
+        var pcm = MakePcm(format, 750, .5, 1024);
+        var analyzer = new AudioSpectrumAnalyzer(format);
+        var feed = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(20) };
+        feed.Tick += (_, _) => analyzer.ProcessPcm(pcm, bins => { foreach (var view in views) view.SetSpectrum(bins); });
+        host.Show(); feed.Start(); Pump(240);
+        var layouts = 0; var intervals = new List<double>(); var lastAt = 0L; var lastRenderingTime = TimeSpan.MinValue;
+        EventHandler layout = (_, _) => layouts++;
+        EventHandler rendering = (_, e) =>
+        {
+            if (e is RenderingEventArgs frame)
+            {
+                if (frame.RenderingTime == lastRenderingTime) return;
+                lastRenderingTime = frame.RenderingTime;
+            }
+            var now = Stopwatch.GetTimestamp();
+            if (lastAt != 0) intervals.Add(Stopwatch.GetElapsedTime(lastAt, now).TotalMilliseconds);
+            lastAt = now;
+        };
+        grid.LayoutUpdated += layout; CompositionTarget.Rendering += rendering;
+        var counts = views.Select(view => view.RenderedFrameCount).ToArray();
+        Pump(900);
+        grid.LayoutUpdated -= layout; CompositionTarget.Rendering -= rendering;
+        feed.Stop(); host.Close();
+        Check(layouts == 0, "Five active frequency placements redraw without running a WPF layout pass per frame");
+        Check(views.Select((view, i) => view.RenderedFrameCount - counts[i]).Min() >= 15,
+            "Five maximum-band placements keep animating together on real composition frames");
+        intervals.Sort();
+        Console.WriteLine($"PERF native five-placement composition: unique-frames={intervals.Count + 1} spectrum-frames={views.Min(view => view.RenderedFrameCount)} interval-median={intervals[intervals.Count / 2]:F2}ms interval-p95={intervals[(int)(intervals.Count * .95)]:F2}ms layout-passes={layouts}");
     }
 
     private static void TestEditor()
     {
         var initial = new SpectrumSettings();
-        var editor = new SpectrumSettingsWindow(initial) { Left = -9000, Top = -9000, WindowStartupLocation = WindowStartupLocation.Manual, ShowActivated = false };
-        editor.Show(); Pump(100);
+        var editor = new SpectrumSettingsEditor(initial);
+        var host = new Window { Content = editor, Width = 450, Height = 780, Left = -9000, Top = -9000, ShowActivated = false, ShowInTaskbar = false };
+        host.Show(); Pump(100);
         var events = 0; editor.PreviewChanged += _ => events++;
         var gain = Find<Slider>(editor, value => AutomationProperties.GetAutomationId(value) == "SpectrumGain");
         gain.Value = 3.1; Pump(80);
         Check(Math.Abs(editor.Result.Gain - 3.1) < .01 && events > 0, "Response slider applies independent live preview");
-        Check(initial.Gain == 1.8, "Settings editor never mutates caller before save");
+        Check(initial.Gain == 1.8, "Settings editor publishes independent settings snapshots for automatic persistence");
+        Check(editor.FindName("SaveButton") is null && editor.FindName("PreviewSpectrum") is null && editor.FindName("PreviewRingSpectrum") is null,
+            "Inline spectrum settings have no save button or duplicate synthetic spectrum renderer");
         var bottom = Find<CheckBox>(editor, value => AutomationProperties.GetAutomationId(value) == "SpectrumShowBottom");
-        bottom.IsChecked = false; Pump(20);
-        Check(!((Button)editor.FindName("SaveButton")).IsEnabled, "Editor explains an empty selection instead of silently restoring a position");
+        var beforeInvalid = events;
+        bottom.IsChecked = false; editor.Flush();
+        Check(!editor.IsInputValid && events == beforeInvalid, "An empty placement selection is explained without publishing invalid auto-save data");
         Find<CheckBox>(editor, value => AutomationProperties.GetAutomationId(value) == "SpectrumShowTop").IsChecked = true;
         Find<CheckBox>(editor, value => AutomationProperties.GetAutomationId(value) == "SpectrumShowRing").IsChecked = true;
         Pump(50);
-        Check(editor.Result.ShowTop && !editor.Result.ShowBottom && editor.Result.ShowRing && ((Button)editor.FindName("SaveButton")).IsEnabled,
+        Check(editor.Result.ShowTop && !editor.Result.ShowBottom && editor.Result.ShowRing && editor.IsInputValid,
             "Multiple placements update the live preview and remain independently selectable");
-        var ringPreview = (SpectrumView)editor.FindName("PreviewRingSpectrum");
-        Check(ringPreview.IsRadial && ringPreview.IsVisible && ringPreview.IsRendering, "Selecting the album ring displays a real radial FFT preview");
         Find<Slider>(editor, value => AutomationProperties.GetAutomationId(value) == "SpectrumFrameRate").Value = 120;
+        editor.Flush();
         Check(editor.Result.FrameRate == 120, "Editor supports independent 120-fps selection");
+        Find<TabControl>(editor, _ => true).SelectedIndex = 1; Pump(30);
         var color = Find<TextBox>(editor, value => AutomationProperties.GetAutomationId(value) == "SpectrumColorStart");
-        color.Text = "#"; Pump(40);
-        Check(!((Button)editor.FindName("SaveButton")).IsEnabled, "Partial HEX input stays in editor and blocks invalid save");
+        beforeInvalid = events;
+        color.Text = "#"; editor.Flush();
+        Check(!editor.IsInputValid && events == beforeInvalid, "Partial HEX input stays editable and never publishes an invalid preference");
         color.Text = "#CC22AADD"; Pump(80);
-        Check(editor.Result.ColorStart == "#CC22AADD" && ((Button)editor.FindName("SaveButton")).IsEnabled, "ARGB HEX accepted with valid live preview");
+        Check(editor.Result.ColorStart == "#CC22AADD" && editor.IsInputValid, "ARGB HEX accepted with valid live preview");
+        color.Text = "#ABC"; editor.Flush();
+        Check(editor.Result.ColorStart == "#AABBCC" && editor.IsInputValid, "Three-digit color input expands consistently for preview and persistence");
+        Find<TabControl>(editor, _ => true).SelectedIndex = 0; Pump(30);
         Find<ComboBox>(editor, value => AutomationProperties.GetName(value) == "频谱形态").SelectedValue = "Line";
         Pump(80);
-        Check(editor.Result.Mode == "Line" && ringPreview.IsPlaying, "Selecting the smooth line updates both Cartesian and radial previews");
+        Check(editor.Result.Mode == "Line" && editor.IsInputValid, "Selecting the smooth line publishes settings for the real immersive spectrum");
         var output = Path.GetFullPath("artifacts/spectrum-checks");
         Directory.CreateDirectory(output);
         var bitmap = new RenderTargetBitmap((int)editor.ActualWidth, (int)editor.ActualHeight, 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(editor); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using (var file = File.Create(Path.Combine(output, "settings.png"))) encoder.Save(file);
-        editor.Close(); var afterClose = events; Pump(100);
-        Check(events == afterClose, "Closed editor stops synthetic-preview callbacks");
-        Check(!ringPreview.IsRendering, "Closed editor unsubscribes its radial preview from composition");
+        gain.Value = 3.3;
+        var afterClose = -1;
+        editor.Unloaded += (_, _) => afterClose = events;
+        host.Close(); Pump(100);
+        Check(editor.Result.Gain == 3.3, "Closing the inline editor flushes the latest continuous-slider edit");
+        Check(afterClose >= 0 && events == afterClose, "Unloaded inline editor leaves no delayed preview callbacks");
     }
 
     private static T Find<T>(DependencyObject root, Func<T, bool> predicate) where T : DependencyObject

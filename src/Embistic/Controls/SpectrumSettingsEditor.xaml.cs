@@ -1,41 +1,25 @@
-using System.Buffers.Binary;
 using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
-using System.Windows.Interop;
-using System.Windows.Media;
 using System.Windows.Threading;
 using Embistic.Models;
-using Embistic.Services;
-using NAudio.Wave;
-
-namespace Embistic.Views;
-
-public partial class SpectrumSettingsWindow : Window
+namespace Embistic.Controls;
+public partial class SpectrumSettingsEditor : UserControl
 {
     private SpectrumSettings _editable;
     private readonly Dictionary<string, TextBox> _colors = new();
-    private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(22) };
-    private readonly AudioSpectrumAnalyzer _previewAnalyzer = new(WaveFormat.CreateIeeeFloatWaveFormat(48000, 1));
-    private readonly byte[] _demoBytes = new byte[1024 * 4];
-    private int _demoSample;
-    private bool _loading, _closed;
+    private readonly DispatcherTimer _refresh = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(40) };
+    private bool _loading;
     public SpectrumSettings Result { get; private set; }
+    public bool IsInputValid { get; private set; } = true;
     public event Action<SpectrumSettings>? PreviewChanged;
-
-    public SpectrumSettingsWindow(SpectrumSettings initial)
+    public SpectrumSettingsEditor(SpectrumSettings initial)
     {
-        _editable = initial.Clone(); _editable.Normalize(); Result = _editable.Clone();
-        InitializeComponent();
-        BuildFields();
-        _previewTimer.Tick += (_, _) => FeedPreview();
-        SourceInitialized += (_, _) => ApplyNativeTitlebar();
-        RefreshPreview(false);
+        _editable = initial.Clone(); _editable.Normalize(); Result = _editable.Clone(); InitializeComponent(); BuildFields();
+        _refresh.Tick += (_, _) => Flush(); Unloaded += (_, _) => Flush(); RefreshPreview(false);
     }
-
     private void BuildFields()
     {
         _loading = true;
@@ -114,7 +98,7 @@ public partial class SpectrumSettingsWindow : Window
         valueText.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
         Grid.SetColumn(valueText, 1); grid.Children.Add(valueText);
         parent.Children.Add(grid);
-        var slider = new Slider { Minimum = minimum, Maximum = maximum, Value = initial, TickFrequency = step, IsSnapToTickEnabled = true, Margin = new Thickness(0, 0, 0, 9) };
+        var slider = new Slider { Minimum = minimum, Maximum = maximum, Value = initial, TickFrequency = step, IsSnapToTickEnabled = false, Margin = new Thickness(0, 0, 0, 9) };
         AutomationProperties.SetName(slider, label); AutomationProperties.SetAutomationId(slider, id);
         slider.ValueChanged += (_, e) => { assign(e.NewValue); valueText.Text = Value(e.NewValue, step) + suffix; Changed(); };
         parent.Children.Add(slider);
@@ -131,91 +115,21 @@ public partial class SpectrumSettingsWindow : Window
         _colors[property] = textbox; parent.Children.Add(textbox);
     }
 
-    private void Changed()
-    {
-        if (!_loading && !_closed) RefreshPreview(true);
-    }
 
+    private void Changed() { if (!_loading && !_refresh.IsEnabled) _refresh.Start(); }
+    public void Flush() { if (!_refresh.IsEnabled) return; _refresh.Stop(); RefreshPreview(true); }
     private void RefreshPreview(bool notify)
     {
-        foreach (var entry in _colors)
-        {
-            if (!Regex.IsMatch(entry.Value.Text.Trim(), @"^#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$"))
-            {
-                ValidationText.Text = "请输入完整颜色，例如 #ADC9F0 或 #CCADC9F0。";
-                SaveButton.IsEnabled = false; return;
-            }
-        }
-        if (_editable.MinFrequency >= _editable.MaxFrequency)
-        {
-            ValidationText.Text = "最低频率需要小于最高频率。";
-            SaveButton.IsEnabled = false; return;
-        }
+        IsInputValid = false;
+        if (_colors.Any(entry => !Regex.IsMatch(entry.Value.Text.Trim(), @"^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$")))
+        { ValidationText.Text = "请输入完整颜色，例如 #ADC9F0。"; return; }
+        if (_editable.MinFrequency >= _editable.MaxFrequency) { ValidationText.Text = "最低频率需要小于最高频率。"; return; }
         if (_editable.Enabled && !_editable.ShowTop && !_editable.ShowBottom && !_editable.ShowLeft && !_editable.ShowRight && !_editable.ShowRing)
-        {
-            ValidationText.Text = "请选择至少一个显示位置，或关闭频谱。";
-            SaveButton.IsEnabled = false; return;
-        }
-        _editable.ColorStart = _colors["ColorStart"].Text.Trim();
-        _editable.ColorEnd = _colors["ColorEnd"].Text.Trim();
-        Result = _editable.Clone(); Result.Normalize();
-        PreviewSpectrum.ApplySettings(Result);
-        PreviewSpectrum.IsPlaying = PreviewEnabledBox.IsChecked == true && Result.Enabled;
-        RingPreview.Visibility = Result.ShowRing ? Visibility.Visible : Visibility.Collapsed;
-        PreviewRingSpectrum.ApplySettings(Result);
-        PreviewRingSpectrum.IsPlaying = PreviewSpectrum.IsPlaying && Result.ShowRing;
-        ValidationText.Text = "频谱读取本机输出；DLNA 音箱的音频无法在电脑回环捕获。";
-        SaveButton.IsEnabled = true;
+        { ValidationText.Text = "请选择显示位置，或关闭频谱。"; return; }
+        _editable.ColorStart = _colors["ColorStart"].Text.Trim(); _editable.ColorEnd = _colors["ColorEnd"].Text.Trim();
+        Result = _editable.Clone(); Result.Normalize(); IsInputValid = true; ValidationText.Text = "修改即时生效并自动保存";
         if (notify) PreviewChanged?.Invoke(Result.Clone());
     }
-
-    private void FeedPreview()
-    {
-        if (_closed || !IsVisible || PreviewEnabledBox.IsChecked != true || !Result.Enabled) return;
-        for (var i = 0; i < 1024; i++)
-        {
-            var time = (_demoSample + i) / 48000.0;
-            var signal = .14 * Math.Sin(2 * Math.PI * 94 * time) * (.6 + .4 * Math.Sin(time * 2))
-                + .08 * Math.Sin(2 * Math.PI * 750 * time) + .055 * Math.Sin(2 * Math.PI * 3500 * time);
-            BinaryPrimitives.WriteInt32LittleEndian(_demoBytes.AsSpan(i * 4, 4), BitConverter.SingleToInt32Bits((float)signal));
-        }
-        _demoSample += 1024;
-        _previewAnalyzer.ProcessPcm(_demoBytes, bins =>
-        {
-            PreviewSpectrum.SetSpectrum(bins, 48000);
-            if (Result.ShowRing) PreviewRingSpectrum.SetSpectrum(bins, 48000);
-        });
-    }
-
-    private void PreviewEnabled_Click(object sender, RoutedEventArgs e)
-    {
-        PreviewSpectrum.IsPlaying = PreviewEnabledBox.IsChecked == true && Result.Enabled;
-        PreviewRingSpectrum.IsPlaying = PreviewSpectrum.IsPlaying && Result.ShowRing;
-        if (PreviewSpectrum.IsPlaying) _previewTimer.Start(); else _previewTimer.Stop();
-    }
-
-    private void Window_Loaded(object sender, RoutedEventArgs e)
-    {
-        Width = Math.Min(Width, Math.Max(MinWidth, SystemParameters.WorkArea.Width - 40));
-        Height = Math.Min(Height, Math.Max(MinHeight, SystemParameters.WorkArea.Height - 40));
-        _previewTimer.Start(); FeedPreview();
-    }
-
-    private void Window_Closed(object? sender, EventArgs e) { _closed = true; _previewTimer.Stop(); PreviewSpectrum.IsPlaying = false; PreviewRingSpectrum.IsPlaying = false; }
-    private void Reset_Click(object sender, RoutedEventArgs e) { _editable = new SpectrumSettings(); BuildFields(); RefreshPreview(true); }
-    private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
-    private void Save_Click(object sender, RoutedEventArgs e) { RefreshPreview(false); if (SaveButton.IsEnabled) DialogResult = true; }
-
-    private void ApplyNativeTitlebar()
-    {
-        var color = (Application.Current?.Resources["Bg"] as SolidColorBrush)?.Color ?? Color.FromRgb(12, 16, 21);
-        var dark = color.R + color.G + color.B < 380 ? 1 : 0;
-        var handle = new WindowInteropHelper(this).Handle;
-        DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
-        var caption = color.R | color.G << 8 | color.B << 16;
-        DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int));
-    }
-
-    [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr handle, int attribute, ref int value, int size);
+    private void Reset_Click(object sender, RoutedEventArgs e) { _editable = new(); BuildFields(); RefreshPreview(true); }
     private sealed record Choice(string Value, string Label) { public override string ToString() => Label; }
 }

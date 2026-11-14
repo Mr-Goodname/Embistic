@@ -55,6 +55,7 @@
     </LinearGradientBrush>
    </ScrollViewer.OpacityMask>
    <StackPanel x:Name="LineHost">
+    <StackPanel.RenderTransform><TranslateTransform x:Name="ScrollTranslation"/></StackPanel.RenderTransform>
     <Border x:Name="TopSpace" IsHitTestVisible="False"/>
     <StackPanel x:Name="RowsPanel" Margin="28,0"/>
     <Border x:Name="BottomSpace" IsHitTestVisible="False"/>

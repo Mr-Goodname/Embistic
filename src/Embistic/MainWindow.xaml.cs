@@ -100,6 +100,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public string RepeatLabel => _repeat switch { 1 => "列表循环", 2 => "单曲循环", _ => "顺序播放" };
     public string PagingLabel => _resultCount == 0 ? "0 首" : $"{_page + 1} / {Math.Max(1, (int)Math.Ceiling(_resultCount / 200.0))} 页 · {_resultCount:N0} 首";
     public string QueueScopeLabel => Queue.Count != _queueSourceCount ? "自定义队列" : _queueScopeLabel;
+    public string VersionLabel => "Embistic " + (typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "0.5.0");
     public bool HasFavoriteAlbums => FavoriteAlbums.Count > 0;
     public bool HasPlainLyrics => !_document.IsSynced;
     public string PlainLyrics => _document.IsSynced ? "" : _document.PlainText;
@@ -117,6 +118,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         AnimatedLyrics.UpdatePlayback(_position, _playing, _settings.LyricsOffsetMs);
         _desktop?.UpdatePlayback(_position, _playing);
         _tray?.Update(CurrentTitle, _playing);
+        UpdateQueueHeader();
         SyncSpectrumCapture();
     }
     private static string FormatTime(long ms) => TimeSpan.FromMilliseconds(Math.Max(0, ms)).ToString(ms >= 3600000 ? @"h\:mm\:ss" : @"m\:ss");
@@ -124,7 +126,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public MainWindow()
     {
         InitializeComponent();
+        InitializeInlineSettings();
+        InitializeNavigation();
         DataContext = this;
+        InitializeQueueControls();
         _theme.ThemeChanged += () => { Notify(nameof(ShuffleBrush)); Notify(nameof(RepeatBrush)); ApplyAppearance(_appearance); };
         _theme.Apply(_settings.Theme);
         ApplyAppearance(_settings.Appearance);
@@ -223,8 +228,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Notify(nameof(LibraryCountLabel));
             SaveSettings();
             await LoadHomeAsync();
-            ShowPage(_settings.Display.StartInLyrics ? "lyrics" : "home");
-            HomeNav.IsChecked = true;
+            ShowPage("home");
+            if (_settings.Display.StartInLyrics) ShowPage("lyrics");
             Status = $"已连接 · {user.Name} · 音乐库已就绪";
         }
         catch { if (_emby != client) client.Dispose(); ConnectionLabel = "○  连接未完成"; throw; }
@@ -232,6 +237,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void InitializeLocalStores()
     {
+        _albumQueueCts?.Cancel();
+        InitializePlaylistStore();
         _history = new ListeningHistoryService(_settings);
         _history.Changed += () => { if (!_closing && _section == "home") _ = RefreshListeningStatsAsync(); };
         _downloads?.Dispose();
@@ -255,14 +262,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void Nav_Checked(object sender, RoutedEventArgs e)
     {
-        if (!_ready || sender is not RadioButton { Tag: string section }) return;
-        _searchTimer.Stop(); _search = ""; SearchBox.Text = ""; _albumId = ""; _page = 0;
-        ShowPage(section);
-        await GuardAsync(() => LoadSectionAsync(section));
+        if (!_ready || _syncingNavigationSelection || sender is not RadioButton { Tag: string section }) return;
+        await NavigateRootAsync(section);
     }
 
     private void ShowPage(string section)
     {
+        if (RestoreImmersiveReturn(section)) return;
+        PreparePageNavigation(section);
+        if (_section != section) FlushInlineSettings();
         _pageCts?.Cancel();
         if (_section != "lyrics" && section == "lyrics")
         {
@@ -286,7 +294,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             case "browse": LibraryBrowsePage.Visibility = Visibility.Visible; break;
             case "albums": AlbumsPage.Visibility = Visibility.Visible; PageTitle = "专辑"; PageSubtitle = $"{_albumCount:N0} 张专辑 · 按最近添加排序"; break;
             case "queue": QueuePage.Visibility = Visibility.Visible; PageTitle = "播放队列"; PageSubtitle = $"{Queue.Count:N0} 首歌曲 · {QueueScopeLabel} · 双击立即播放"; break;
-            case "lyrics": LyricsPage.Visibility = Visibility.Visible; PageTitle = Current?.Title ?? "歌词"; PageSubtitle = Current?.Artist ?? "开始播放后自动匹配歌词"; break;
+            case "lyrics": PageTitle = Current?.Title ?? "歌词"; PageSubtitle = Current?.Artist ?? "开始播放后自动匹配歌词"; break;
+            case "lyricSettings": LyricsPage.Visibility = Visibility.Visible; PageTitle = "歌词"; PageSubtitle = "外观、同步与网络来源 · 修改自动保存"; ShowLyricsSettingsPage(); break;
             case "devices": DevicesPage.Visibility = Visibility.Visible; PageTitle = "音频与投放"; PageSubtitle = "在电脑上聆听，或让音乐充满整个房间。"; break;
             case "settings": SettingsPage.Visibility = Visibility.Visible; PageTitle = "设置"; PageSubtitle = "连接你的媒体库，调整自己的聆听方式。"; break;
         }
@@ -294,6 +303,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Motion.Enter(PageHeading, _appearance, page: true);
         if (section == "lyrics") AnimatedLyrics.UpdatePlayback(_position, _playing, _settings.LyricsOffsetMs);
         SyncSpectrumCapture();
+        UpdateNavigationUi();
     }
 
     private Task LoadSectionAsync(string section) => section switch
@@ -337,7 +347,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void Search_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (SearchHint is not null) SearchHint.Visibility = string.IsNullOrEmpty(SearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
-        if (!_ready) return;
+        if (!_ready || _restoringNavigation) return;
         _searchTimer.Stop();
         _searchTimer.Start();
     }
@@ -352,8 +362,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
         if (text == _search) return;
+        var origin = CaptureNavigationFrame() with { SearchText = _search };
         _search = text; _page = 0; _albumId = "";
-        if (_section != "albums") ShowPage("tracks");
+        ShowPageFrom(_section == "albums" ? "albums" : "tracks", origin);
         PageTitle = string.IsNullOrEmpty(text) ? (_section == "albums" ? "专辑" : "全部歌曲") : $"搜索 · {text}";
         PageSubtitle = "在整个 Emby 音乐库中查找";
         await GuardAsync(() => _section == "albums" ? LoadAlbumsAsync(false) : LoadTracksAsync());
@@ -362,10 +373,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async void Album_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: Album album }) return;
-        _albumId = album.Id; _page = 0; _search = ""; SearchBox.Text = "";
-        PageTitle = album.Title; PageSubtitle = album.Artist + (album.Year is { } year ? $" · {year}" : "");
-        ShowPage("album");
-        await GuardAsync(LoadTracksAsync);
+        await GuardAsync(() => OpenAlbumAsync(album));
     }
 
     private async void PreviousPage_Click(object sender, RoutedEventArgs e) { if (_page > 0) { _page--; await GuardAsync(LoadTracksAsync); } }
@@ -419,11 +427,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var list = tracks.ToList();
         if (list.Count == 0) { Status = "这里还没有可以播放的歌曲。"; return; }
         if (shuffle) Random.Shared.Shuffle(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list));
-        _queueScopeLabel = fromCurrentPage ? $"当前第 {_page + 1} 页队列" : "完整选择队列";
-        _queueSourceCount = list.Count;
-        Replace(Queue, list);
-        Notify(nameof(QueueScopeLabel));
+        ReplaceQueueWithoutPlayback(list, fromCurrentPage ? $"当前第 {_page + 1} 页队列" : "完整选择队列");
         _queueIndex = first is null ? 0 : Math.Max(0, list.FindIndex(t => t.Id == first.Id));
+        _queueDetached = false;
         if (_section == "queue") PageSubtitle = $"{Queue.Count:N0} 首歌曲 · {QueueScopeLabel} · 双击立即播放";
         await PlayTrackAsync(Queue[_queueIndex]);
     }
@@ -444,7 +450,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async void Track_DoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null) return;
-        if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is Track track) await GuardAsync(() => StartQueueAsync(Tracks, first: track));
+        if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is Track track) await GuardAsync(() => PlayVisibleTrackAsync(track));
     }
     private async void Queue_DoubleClick(object sender, MouseButtonEventArgs e)
     {
@@ -456,23 +462,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         while (obj is not null) { if (obj is T match) return match; obj = obj is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(obj) : LogicalTreeHelper.GetParent(obj); }
         return null;
     }
-    private async void ContextPlay_Click(object sender, RoutedEventArgs e) { if (TrackList.SelectedItem is Track track) await GuardAsync(() => StartQueueAsync(Tracks, first: track)); }
+    private async void ContextPlay_Click(object sender, RoutedEventArgs e) { if (TrackList.SelectedItem is Track track) await GuardAsync(() => PlayVisibleTrackAsync(track)); }
     private void ContextNext_Click(object sender, RoutedEventArgs e) { if (TrackList.SelectedItem is Track track) { Queue.Insert(Math.Clamp(_queueIndex + 1, 0, Queue.Count), track); Status = $"下一首播放 · {track.Title}"; } }
     private async void ContextFavorite_Click(object sender, RoutedEventArgs e) { if (TrackList.SelectedItem is Track track) await ToggleFavoriteAsync(track); }
     private void ClearQueue_Click(object sender, RoutedEventArgs e)
     {
-        Queue.Clear(); _queueIndex = -1;
-        if (Current is not null) { Queue.Add(Current); _queueIndex = 0; }
-        PageSubtitle = $"{Queue.Count} 首歌曲 · 当前播放已保留";
+        Queue.Clear();
+        Status = Current is null ? "播放队列已清空。" : "播放队列已清空，当前音乐继续播放。";
     }
     private void RemoveQueue_Click(object sender, RoutedEventArgs e)
     {
-        if (QueueList.SelectedIndex < 0) return;
-        var index = QueueList.SelectedIndex;
-        if (index == _queueIndex) { Status = "正在播放的歌曲会保留，可移除其他待播歌曲。"; return; }
-        Queue.RemoveAt(index);
-        if (index < _queueIndex) _queueIndex--;
-        PageSubtitle = $"{Queue.Count:N0} 首歌曲 · 双击立即播放";
+        RemoveQueueAt(QueueList.SelectedIndex);
     }
 
     private async Task PlayTrackAsync(Track track)
@@ -494,8 +494,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _playing = false; _position = 0; _duration = track.DurationMs;
             Current = track; _lyricIndex = -2; _document = LyricsDocument.Empty("正在寻找歌词…");
             _history?.BeginTrack(track);
-            var queueIndex = Queue.IndexOf(track);
-            if (queueIndex >= 0) _queueIndex = queueIndex;
+            var queueIndex = _queueIndex >= 0 && _queueIndex < Queue.Count && ReferenceEquals(Queue[_queueIndex], track) ? _queueIndex : Queue.IndexOf(track);
+            if (queueIndex >= 0) { _queueIndex = queueIndex; _queueDetached = false; }
+            else _queueDetached = true;
             UpdateLyricsBindings();
             Status = $"正在播放 · {track.Title} · {QueueScopeLabel} {Queue.Count:N0} 首";
             if (old is not null && client is not null) _ = QueueSessionReportAsync(client, old, oldPosition, true, "stop");
@@ -669,13 +670,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (_switchingOutput || _transportGate.CurrentCount == 0 || _automaticAdvanceVersion == _playVersion || (_renderer is null && _player?.HasEnded != true)) return;
             _automaticAdvanceVersion = _playVersion;
         }
-        if (Queue.Count == 0) { _playing = false; NotifyNowPlaying(); return; }
+        if (Queue.Count == 0) { if (automatic) { _playing = false; NotifyNowPlaying(); } Status = automatic ? "播放队列已结束。" : Current is null ? "播放队列为空。" : "播放队列为空，当前音乐继续播放。"; return; }
         if (automatic && _repeat == 2 && Current is not null) { await GuardAsync(() => PlayTrackAsync(Current)); return; }
         int index;
         if (_shuffle && Queue.Count > 1)
         {
-            index = Random.Shared.Next(Queue.Count - 1);
-            if (index >= _queueIndex) index++;
+            if (_queueDetached || _queueIndex < 0) index = Random.Shared.Next(Queue.Count);
+            else { index = Random.Shared.Next(Queue.Count - 1); if (index >= _queueIndex) index++; }
         }
         else index = _queueIndex + 1;
         if (index >= Queue.Count)
@@ -697,7 +698,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_position > 3000) { await SeekAsync(0); return; }
         if (Queue.Count == 0) return;
-        _queueIndex = (_queueIndex - 1 + Queue.Count) % Queue.Count;
+        _queueIndex = _queueDetached ? Math.Clamp(_queueIndex, 0, Queue.Count - 1) : (_queueIndex - 1 + Queue.Count) % Queue.Count;
         await PlayTrackAsync(Queue[_queueIndex]);
     });
     private async void PlayPause_Click(object sender, RoutedEventArgs e) => await GuardAsync(TogglePlayAsync);
@@ -1016,8 +1017,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         _appearance = appearance.Clone();
         _appearance.Normalize();
-        AnimatedLyrics.ApplyAppearance(_appearance);
-        _desktop?.ApplyAppearance(_appearance);
+        ImmersivePlayer.ApplyAppearance(_appearance);
+        _appearancePreviewActive = true;
+        try { _desktop?.ApplyAppearance(_appearance); }
+        finally { _appearancePreviewActive = false; }
         SidebarCurrentLyric.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(_appearance.CurrentColor));
         SidebarNextLyric.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(_appearance.InactiveColor));
         SidebarCurrentLyric.FontFamily = SidebarNextLyric.FontFamily = new FontFamily(_appearance.FontFamily);
@@ -1031,22 +1034,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
     private void Appearance_Click(object sender, RoutedEventArgs e)
     {
-        var original = _settings.Appearance.Clone();
-        var editor = new LyricAppearanceWindow(original) { Owner = this };
-        editor.PreviewChanged += ApplyAppearance;
-        bool? accepted;
-        _appearancePreviewActive = true;
-        try { accepted = editor.ShowDialog(); }
-        finally { _appearancePreviewActive = false; }
-        if (accepted == true)
-        {
-            _settings.Appearance = editor.Result.Clone();
-            _settings.LyricFontSize = _settings.Appearance.DesktopFontSize;
-            ApplyAppearance(_settings.Appearance);
-            SaveSettings();
-            Status = "歌词样式与动效已保存。";
-        }
-        else ApplyAppearance(original);
+        OpenLyricsSettings();
     }
     private async void ImportLyrics_Click(object sender, RoutedEventArgs e)
     {
@@ -1091,6 +1079,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     });
     private void SaveSettings()
     {
+        _inlineSaveTimer.Stop();
         try { _saveSettings(_settings); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException) { Status = "设置未能保存，请检查用户目录权限。"; }
     }
@@ -1125,18 +1114,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_closing) return;
         if (!_exitRequested && _settings.CloseToTray && _tray?.Available == true)
         {
+            FlushInlineSettings();
             Hide();
             Status = "已隐藏到托盘，音乐继续播放。右键托盘图标可退出。";
             return;
         }
         _closing = true;
+        FlushInlineSettings();
         ++_playVersion;
         ++_connectVersion;
         _timer.Stop(); _searchTimer.Stop(); _volumeTimer.Stop();
         _pageCts?.Cancel(); _lyricCts?.Cancel();
         _queueSelectionCts?.Cancel();
+        _albumQueueCts?.Cancel();
         _downloadCts?.Cancel();
         await _downloadTask;
+        await _playlistWrites.ContinueWith(_ => { }, TaskScheduler.Default);
         SaveSettings();
         _desktop?.Hide();
         if (Current is { } track)

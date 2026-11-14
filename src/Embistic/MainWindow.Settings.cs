@@ -84,12 +84,7 @@ public partial class MainWindow
     }
     private void SpectrumSettings_Click(object sender, RoutedEventArgs e)
     {
-        var original = _settings.Spectrum.Clone();
-        var editor = new SpectrumSettingsWindow(original) { Owner = this };
-        editor.SourceInitialized += (_,_) => _theme.ApplyWindowChrome(editor);
-        editor.PreviewChanged += ApplySpectrumSettings;
-        if (editor.ShowDialog() == true) { _settings.Spectrum = editor.Result.Clone(); ApplySpectrumSettings(_settings.Spectrum); SaveSettings(); Status = "频谱设置已保存。"; }
-        else ApplySpectrumSettings(original);
+        OpenSpectrumSettings();
     }
     private void SyncSpectrumCapture()
     {

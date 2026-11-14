@@ -9,11 +9,16 @@ $projects = @(
     'lyrics/LyricsTests.csproj',
     'dlna/DlnaChecks.csproj',
     'appearance/AppearanceTests.csproj',
+    'desktop-lyrics/DesktopLyricsChecks.csproj',
     'animated-lyrics/AnimatedLyricsChecks.csproj',
     'theme/ThemeChecks.csproj',
     'spectrum/SpectrumChecks.csproj',
     'sliders/SliderChecks.csproj',
     'background/BackgroundChecks.csproj',
+    'immersive-layout/ImmersiveLayoutChecks.csproj',
+    'inline-settings/InlineSettingsChecks.csproj',
+    'playlists/PlaylistChecks.csproj',
+    'navigation/NavigationChecks.csproj',
     'integration/IntegrationChecks.csproj'
 )
 if ($IncludeMedia) { $projects += 'media/MediaSmoke.csproj' }

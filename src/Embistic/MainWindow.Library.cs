@@ -15,7 +15,6 @@ namespace Embistic;
 public partial class MainWindow
 {
     private sealed record LibraryBrowseState(string Category, string Name, LibraryItem? Container = null);
-    private readonly Stack<LibraryBrowseState> _libraryBackStack = new();
     private LibraryBrowseState? _libraryState;
     private IReadOnlyList<LibraryItem>? _libraryAllItems;
     private int _libraryOffset, _libraryTotal, _libraryRequestVersion;
@@ -36,29 +35,31 @@ public partial class MainWindow
     private async void LibraryShortcut_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: LibraryShortcut shortcut }) return;
-        _libraryBackStack.Clear();
+        var origin = CaptureNavigationFrame();
         _searchTimer.Stop();
         _search = "";
         SearchBox.Text = "";
         _searchTimer.Stop();
         _page = 0;
         _albumId = "";
-        if (shortcut.Id == "albums") { ShowPage("albums"); await GuardAsync(() => LoadAlbumsAsync(false)); return; }
-        if (shortcut.Id == "tracks") { ShowPage("tracks"); await GuardAsync(LoadTracksAsync); return; }
-        await GuardAsync(() => LoadLibraryBrowseAsync(new(shortcut.Id, shortcut.Name)));
+        if (shortcut.Id == "albums") { ShowPageFrom("albums", origin); await GuardAsync(() => LoadAlbumsAsync(false)); return; }
+        if (shortcut.Id == "tracks") { ShowPageFrom("tracks", origin); await GuardAsync(LoadTracksAsync); return; }
+        await GuardAsync(() => LoadLibraryBrowseAsync(new(shortcut.Id, shortcut.Name), origin));
     }
 
-    private async Task LoadLibraryBrowseAsync(LibraryBrowseState state)
+    private async Task LoadLibraryBrowseAsync(LibraryBrowseState state, NavigationFrame? origin = null)
     {
         var client = _emby;
         if (client is null && state.Category != "radio") { Status = "请先连接 Emby。"; return; }
+        var samePage = _section == "browse" && _libraryState == state;
+        origin ??= CaptureNavigationFrame();
         var request = ++_libraryRequestVersion;
         var connection = _connectVersion;
         _libraryState = state;
         _libraryAllItems = null;
         _libraryOffset = 0;
         _libraryTotal = 0;
-        ShowPage("browse");
+        if (!samePage) ShowPageFrom("browse", origin);
         PageTitle = state.Container?.Name ?? state.Name;
         PageSubtitle = state.Container is { Path.Length: > 0 } container ? container.Path :
             state.Category == "folders" ? "按服务器的真实文件夹层级浏览" : "选择一个条目查看歌曲";
@@ -150,9 +151,13 @@ public partial class MainWindow
                 return;
             }
             if (_emby is null || _libraryState is null) return;
+            if (item.Type == "MusicAlbum")
+            {
+                await OpenAlbumAsync(new Album { Id = item.Id, Title = item.Name, Artist = item.Artist, ImageUrl = item.ImageUrl });
+                return;
+            }
             if (_libraryState.Category == "folders")
             {
-                _libraryBackStack.Push(_libraryState);
                 await LoadLibraryBrowseAsync(new("folders", _libraryState.Name, item));
                 return;
             }
@@ -166,12 +171,11 @@ public partial class MainWindow
         });
     }
 
-    private async void LibraryBack_Click(object sender, RoutedEventArgs e) => await GuardAsync(async () =>
+    private void LibraryBack_Click(object sender, RoutedEventArgs e)
     {
-        ++_libraryRequestVersion;
-        if (_libraryBackStack.TryPop(out var previous)) await LoadLibraryBrowseAsync(previous);
+        if (CanNavigateBack) NavigateBack();
         else { _libraryState = null; ShowPage("library"); }
-    });
+    }
 
     private async void LibraryPlay_Click(object sender, RoutedEventArgs e) => await GuardAsync(async () =>
     {
@@ -232,12 +236,13 @@ public partial class MainWindow
 
     private void ShowCollection(IReadOnlyList<Track> tracks, string title, string subtitle)
     {
+        var origin = CaptureNavigationFrame();
         _search = ""; _albumId = ""; _page = 0;
         SearchBox.Text = ""; _searchTimer.Stop();
         _collectionTracks = tracks.ToArray();
         PageTitle = title;
         PageSubtitle = string.IsNullOrWhiteSpace(subtitle) ? $"{tracks.Count:N0} 首歌曲" : $"{subtitle} · {tracks.Count:N0} 首歌曲";
-        ShowPage("collection");
+        ShowPageFrom("collection", origin);
         _ = RefreshCollectionPage();
     }
 
@@ -350,6 +355,7 @@ public partial class MainWindow
         TrackList.ItemTemplate = template; QueueList.ItemTemplate = template;
         foreach (var list in HomeModules.Children.OfType<Panel>().SelectMany(panel => panel.Children.OfType<ListBox>())) list.ItemTemplate = template;
         ImmersivePlayer.DiscAnimationEnabled = _settings.Display.DiscAnimation;
+        ImmersivePlayer.CoverPresentation = _settings.Display.CoverPresentation;
         SidebarPlayer.Visibility = _settings.Display.ShowSidebarPlayer ? Visibility.Visible : Visibility.Collapsed;
         if (SidebarPlayer.Parent is Grid layout)
         {

@@ -25,7 +25,8 @@
             <Setter Property="Margin" Value="0,8,0,0"/>
         </Style>
     </Window.Resources>
-    <Border x:Name="Surface" Background="Transparent" BorderBrush="Transparent" BorderThickness="0" CornerRadius="18" Padding="22,12,22,18">
+    <Grid x:Name="DesktopRoot" Background="Transparent">
+    <Border x:Name="Surface" Background="Transparent" BorderBrush="Transparent" BorderThickness="0" Padding="22,12,22,18">
         <Border.ContextMenu>
             <ContextMenu>
                 <MenuItem Header="锁定并穿透（主窗口可解锁）" Click="Lock_Click"/>
@@ -40,12 +41,13 @@
                 <MenuItem Header="隐藏桌面歌词" Click="Hide_Click"/>
             </ContextMenu>
         </Border.ContextMenu>
-        <StackPanel>
-            <DockPanel x:Name="TrackHeader" Margin="0,0,0,9">
+        <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="Auto"/><RowDefinition Height="38"/></Grid.RowDefinitions>
+            <DockPanel x:Name="TrackHeader" Margin="0,0,0,9" Visibility="Hidden">
                 <TextBlock x:Name="ModeLabel" DockPanel.Dock="Right" FontSize="10" Foreground="#99C4D3E9" Text="拖动移动 · 右键设置"/>
                 <TextBlock x:Name="TrackLabel" Text="Embistic · 桌面歌词" FontSize="11" Foreground="#AAC4D3E9" TextTrimming="CharacterEllipsis" Margin="0,0,16,0"/>
             </DockPanel>
-            <Grid x:Name="LyricStage" ClipToBounds="False">
+            <Grid x:Name="LyricStage" Grid.Row="1" ClipToBounds="False">
                 <Canvas x:Name="OutgoingCanvas" IsHitTestVisible="False" Visibility="Collapsed">
                     <StackPanel x:Name="OutgoingLayer" Width="{Binding ActualWidth, ElementName=LyricStage}" Opacity="0">
                         <StackPanel.RenderTransform><TranslateTransform x:Name="OutgoingTranslate"/></StackPanel.RenderTransform>
@@ -59,7 +61,7 @@
                     <controls:OutlinedLyricsText x:Name="NextLine" Text="播放歌曲后，将自动查找歌词" Style="{StaticResource SecondaryLyricStyle}"/>
                 </StackPanel>
             </Grid>
-            <StackPanel x:Name="HoverControls" Orientation="Horizontal" HorizontalAlignment="Center" Visibility="Collapsed" Margin="0,8,0,0">
+            <StackPanel x:Name="HoverControls" Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Hidden" Margin="0,8,0,0">
                 <StackPanel.Resources><Style TargetType="Button"><Setter Property="Background" Value="#B0182230"/><Setter Property="Foreground" Value="#EFF5FF"/><Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="9,4"/><Setter Property="Margin" Value="3,0"/></Style></StackPanel.Resources>
                 <Button Content="−" Click="Smaller_Click" ToolTip="缩小字号" AutomationProperties.Name="缩小桌面歌词字号"/>
                 <Button Content="＋" Click="Larger_Click" ToolTip="放大字号" AutomationProperties.Name="放大桌面歌词字号"/>
@@ -68,6 +70,13 @@
                 <Button Content="锁定" Click="Lock_Click" ToolTip="锁定并鼠标穿透"/>
                 <Button Content="隐藏" Click="Hide_Click"/>
             </StackPanel>
-        </StackPanel>
+        </Grid>
     </Border>
+    <Border x:Name="HoverOutline" BorderThickness="1" BorderBrush="Transparent" IsHitTestVisible="False"/>
+    <Thumb x:Name="WidthGrip" Width="20" Height="20" HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Hidden"
+           Cursor="SizeWE" DragStarted="WidthGrip_DragStarted" DragDelta="WidthGrip_DragDelta" DragCompleted="WidthGrip_DragCompleted"
+           AutomationProperties.Name="调整桌面歌词宽度" ToolTip="拖动调整宽度">
+        <Thumb.Template><ControlTemplate TargetType="Thumb"><Border Background="Transparent"><TextBlock Text="◢" Foreground="#BFCBDDDE" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,3,2"/></Border></ControlTemplate></Thumb.Template>
+    </Thumb>
+    </Grid>
 </Window>

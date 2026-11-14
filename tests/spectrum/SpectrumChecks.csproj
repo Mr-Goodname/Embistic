@@ -4,8 +4,9 @@
   <Compile Include="../../src/Embistic/Models/SpectrumSettings.cs" Link="Models/SpectrumSettings.cs"/>
   <Compile Include="../../src/Embistic/Services/AudioSpectrumService.cs" Link="Services/AudioSpectrumService.cs"/>
   <Compile Include="../../src/Embistic/Controls/SpectrumView.cs" Link="Controls/SpectrumView.cs"/>
-  <Page Include="../../src/Embistic/Views/SpectrumSettingsWindow.xaml" Link="Views/SpectrumSettingsWindow.xaml"/>
-  <Compile Include="../../src/Embistic/Views/SpectrumSettingsWindow.xaml.cs" Link="Views/SpectrumSettingsWindow.xaml.cs"/>
+  <Page Include="../../src/Embistic/Controls/SpectrumSettingsEditor.xaml" Link="Controls/SpectrumSettingsEditor.xaml"/>
+  <Compile Include="../../src/Embistic/Controls/SpectrumSettingsEditor.xaml.cs" Link="Controls/SpectrumSettingsEditor.xaml.cs"/>
+  <Page Include="../../src/Embistic/Resources/SettingsEditorStyles.xaml" Link="Resources/SettingsEditorStyles.xaml"/>
   <PackageReference Include="NAudio" Version="2.2.1"/>
  </ItemGroup>
 </Project>

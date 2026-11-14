@@ -1,11 +1,14 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
+using System.Windows.Threading;
 using Embistic.Models;
 using Embistic.Services;
 using Embistic.Controls;
@@ -36,6 +39,10 @@ public partial class DesktopLyricsWindow : Window
     private LyricAppearanceSettings _appearance = new();
     private readonly LyricPlaybackClock _clock = new();
     private bool _renderAttached;
+    private readonly DispatcherTimer _hoverTimer = new(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(33) };
+    private bool _hovered, _dragging, _resizing, _contextMenuOpen;
+    private Brush _hoverBackground = Brushes.Transparent;
+    private static readonly Brush HoverBorder = Brush("#BFD7FF", .68);
 
     public event Action? UserClosed;
     public event Action? OptionsChanged;
@@ -44,10 +51,13 @@ public partial class DesktopLyricsWindow : Window
     {
         InitializeComponent();
         SourceInitialized += (_, _) => ApplyNativeStyle();
+        _hoverTimer.Tick += (_, _) => UpdatePointerHover();
+        Surface.ContextMenu.Opened += (_, _) => { _contextMenuOpen = true; UpdatePointerHover(); };
+        Surface.ContextMenu.Closed += (_, _) => { _contextMenuOpen = false; UpdatePointerHover(); };
         SizeChanged += Window_SizeChanged;
-        IsVisibleChanged += (_, e) => { if (e.NewValue is false) { StopTransition(); StopRendering(); } else StartRendering(); };
-        Loaded += (_, _) => StartRendering();
-        Closed += (_, _) => StopRendering();
+        IsVisibleChanged += (_, e) => { if (e.NewValue is false) { StopTransition(); StopRendering(); } else StartRendering(); UpdateHoverTracking(); };
+        Loaded += (_, _) => { StartRendering(); UpdateHoverTracking(); };
+        Closed += (_, _) => { StopRendering(); _hoverTimer.Stop(); };
         ApplyAppearance(_appearance);
     }
 
@@ -72,9 +82,9 @@ public partial class DesktopLyricsWindow : Window
         {
             if (_isLocked == value) return;
             _isLocked = value;
-            ResizeMode = value || !IsMouseOver ? ResizeMode.NoResize : ResizeMode.CanResizeWithGrip;
-            UpdateBorder();
+            if (value) Surface.ContextMenu.IsOpen = false;
             ApplyNativeStyle();
+            UpdateHoverTracking();
             UpdateModeLabel();
             OptionsChanged?.Invoke();
         }
@@ -108,7 +118,6 @@ public partial class DesktopLyricsWindow : Window
             Topmost = _appearance.DesktopTopmost;
             Width = _appearance.DesktopWidth;
             SizeToContent = SizeToContent.Height;
-            TrackHeader.Visibility = _appearance.ShowTrackInfo && IsMouseOver ? Visibility.Visible : Visibility.Collapsed;
             var alignment = Align(_appearance.DesktopMainAlignment);
             var mainBrush = Brush(_appearance.SungColor);
             var effect = _appearance.ShadowEnabled ? new DropShadowEffect
@@ -134,7 +143,11 @@ public partial class DesktopLyricsWindow : Window
                 line.Effect = effect;
                 line.ApplyLyricsStyle(_appearance);
             }
-            Surface.Background = _appearance.DesktopBackgroundEnabled ? Brush(_appearance.BackgroundColor, _appearance.BackgroundOpacity) : Brushes.Transparent;
+            var backgroundColor = ParseColor(_appearance.BackgroundColor);
+            var hoverOpacity = Math.Clamp(_appearance.BackgroundOpacity * backgroundColor.A / 255d, .2, 1);
+            backgroundColor.A = 255;
+            var background = new SolidColorBrush(backgroundColor) { Opacity = hoverOpacity };
+            background.Freeze(); _hoverBackground = background;
             UpdateBorder();
             RefreshLyrics(force: true, animate: false);
             if (_document is null) SetDisplayedLyrics(_displayedCurrent, _unfilteredSecondary, _secondaryIsTranslation, animate: false, force: true);
@@ -283,10 +296,44 @@ public partial class DesktopLyricsWindow : Window
         _appearance.DesktopWidth = Math.Clamp(e.NewSize.Width, 400, 2200);
         // Manual horizontal resizing must keep long lyric lines wrapped and fully visible.
         if (SizeToContent != SizeToContent.Height) SizeToContent = SizeToContent.Height;
-        OptionsChanged?.Invoke();
+        if (!_resizing) OptionsChanged?.Invoke();
     }
 
-    private void UpdateBorder() { Surface.BorderBrush = Brushes.Transparent; Surface.BorderThickness = new Thickness(0); }
+    private void UpdateBorder()
+    {
+        // Decorations never participate in the text's layout. In particular the
+        // toolbar's fixed row does not resize a SizeToContent window on hover.
+        var visible = _hovered && !_isLocked && IsVisible;
+        Surface.Background = visible ? _hoverBackground : Brushes.Transparent;
+        HoverOutline.BorderBrush = visible ? HoverBorder : Brushes.Transparent;
+        HoverControls.Visibility = WidthGrip.Visibility = visible ? Visibility.Visible : Visibility.Hidden;
+        TrackHeader.Visibility = !_appearance.ShowTrackInfo ? Visibility.Collapsed : visible ? Visibility.Visible : Visibility.Hidden;
+    }
+
+    private void UpdateHoverTracking()
+    {
+        _hoverTimer.Stop();
+        if (IsVisible && IsLoaded && !_isLocked) _hoverTimer.Start();
+        UpdatePointerHover();
+    }
+
+    private void UpdatePointerHover()
+    {
+        var inside = false;
+        // Zero-alpha pixels in a layered HWND are skipped before WPF receives a
+        // MouseEnter or WM_NCHITTEST. Probe the physical client rectangle instead
+        // of drawing an almost-transparent rectangle over the desktop.
+        if (IsVisible && !_isLocked)
+        {
+            var handle = new WindowInteropHelper(this).Handle;
+            inside = _dragging || _resizing || _contextMenuOpen || handle != IntPtr.Zero &&
+                GetCursorPos(out var pointer) && GetWindowRect(handle, out var bounds) &&
+                pointer.X >= bounds.Left && pointer.X < bounds.Right && pointer.Y >= bounds.Top && pointer.Y < bounds.Bottom;
+        }
+        if (_hovered == inside) return;
+        _hovered = inside;
+        UpdateBorder();
+    }
 
     private void UpdateWordProgress()
     {
@@ -311,16 +358,11 @@ public partial class DesktopLyricsWindow : Window
     }
     private void Window_MouseEnter(object sender, MouseEventArgs e)
     {
-        if (_isLocked) return;
-        HoverControls.Visibility = Visibility.Visible;
-        TrackHeader.Visibility = _appearance.ShowTrackInfo ? Visibility.Visible : Visibility.Collapsed;
-        ResizeMode = ResizeMode.CanResizeWithGrip;
+        UpdatePointerHover();
     }
     private void Window_MouseLeave(object sender, MouseEventArgs e)
     {
-        HoverControls.Visibility = Visibility.Collapsed;
-        TrackHeader.Visibility = Visibility.Collapsed;
-        ResizeMode = ResizeMode.NoResize;
+        UpdatePointerHover();
     }
     private void UpdateModeLabel()
     {
@@ -335,14 +377,40 @@ public partial class DesktopLyricsWindow : Window
         var style = GetWindowLongPtr(handle, GwlExStyle).ToInt64() | WsExToolWindow | WsExNoActivate;
         style = _isLocked ? style | WsExTransparent : style & ~WsExTransparent;
         SetWindowLongPtr(handle, GwlExStyle, new IntPtr(style));
+        // A click through a locked overlay may raise another topmost window.
+        // Explicitly unlocking restores this editor's position in its own band,
+        // without taking keyboard focus or changing its rectangle.
+        if (!_isLocked && IsVisible) SetWindowPos(handle, Topmost ? new IntPtr(-1) : IntPtr.Zero, 0, 0, 0, 0, 0x0013);
     }
 
     private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (_isLocked || e.ChangedButton != MouseButton.Left) return;
+        if (_isLocked || e.ChangedButton != MouseButton.Left || IsControlInput(e.OriginalSource as DependencyObject)) return;
+        _dragging = true;
         try { DragMove(); }
         catch (InvalidOperationException) { }
+        finally { _dragging = false; UpdatePointerHover(); }
         OptionsChanged?.Invoke();
+    }
+
+    private static bool IsControlInput(DependencyObject? element)
+    {
+        while (element is not null)
+        {
+            if (element is ButtonBase or Thumb) return true;
+            element = element is Visual ? VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element);
+        }
+        return false;
+    }
+    private void WidthGrip_DragStarted(object sender, DragStartedEventArgs e) { _resizing = true; UpdatePointerHover(); e.Handled = true; }
+    private void WidthGrip_DragDelta(object sender, DragDeltaEventArgs e)
+    {
+        if (!_isLocked) Width = Math.Clamp(Width + e.HorizontalChange, 400, 2200);
+        e.Handled = true;
+    }
+    private void WidthGrip_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        _resizing = false; UpdatePointerHover(); OptionsChanged?.Invoke(); e.Handled = true;
     }
 
     private void Lock_Click(object sender, RoutedEventArgs e) => IsLocked = true;
@@ -381,4 +449,9 @@ public partial class DesktopLyricsWindow : Window
     private static extern IntPtr GetWindowLongPtr(IntPtr handle, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     private static extern IntPtr SetWindowLongPtr(IntPtr handle, int index, IntPtr value);
+    [StructLayout(LayoutKind.Sequential)] private struct NativePoint { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] private struct NativeRect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetCursorPos(out NativePoint point);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetWindowRect(IntPtr handle, out NativeRect bounds);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetWindowPos(IntPtr handle, IntPtr after, int x, int y, int width, int height, uint flags);
 }

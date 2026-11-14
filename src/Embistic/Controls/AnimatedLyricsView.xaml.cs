@@ -18,8 +18,6 @@ namespace Embistic.Controls;
 /// </summary>
 public partial class AnimatedLyricsView : UserControl
 {
-    private static readonly DependencyProperty AnimatedOffsetProperty = DependencyProperty.Register(
-        "AnimatedOffset", typeof(double), typeof(AnimatedLyricsView), new PropertyMetadata(0d, OffsetChanged));
     private readonly List<LineVisual> _rows = [];
     private readonly DispatcherTimer _followTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private LyricsDocument _document = LyricsDocument.Empty();
@@ -27,7 +25,7 @@ public partial class AnimatedLyricsView : UserControl
     private Color _currentColor = Color.FromRgb(0xBF, 0xD7, 0xFF);
     private Color _inactiveColor = Color.FromRgb(0x82, 0x96, 0xB2);
     private Color _translationColor = Color.FromRgb(0xC2, 0xCD, 0xDF);
-    private int _activeIndex = -1, _scrollVersion, _lastActivationIndex = -1;
+    private int _activeIndex = -1, _lastActivationIndex = -1;
     private long _positionMs, _lastMotionAt, _manualInputAt, _lastActivationAt;
     private bool _hasPosition, _manualScrolling, _layoutScheduled, _animateAfterLayout;
     private double _offsetMs, _targetScrollOffset;
@@ -35,12 +33,16 @@ public partial class AnimatedLyricsView : UserControl
     private bool _renderAttached, _scrollMoving;
     private long _scrollStarted;
     private double _scrollFrom, _scrollDuration;
+    private double _visualOffset;
+    private bool _ownsVisualOffset;
+    private TimeSpan _lastRenderingTime;
+    private int _karaokePreparationVersion;
 
     public event Action<long>? SeekRequested;
     public IReadOnlyList<LyricsLine> Lines => _document.Lines;
     public int ActiveLineIndex => _activeIndex;
     public bool IsFollowingPlayback => !_manualScrolling;
-    public double CurrentScrollOffset => Scroller.VerticalOffset;
+    public double CurrentScrollOffset => _ownsVisualOffset ? _visualOffset : Scroller.VerticalOffset;
     public double TargetScrollOffset => _targetScrollOffset;
 
     public AnimatedLyricsView()
@@ -57,6 +59,22 @@ public partial class AnimatedLyricsView : UserControl
         SizeChanged += (_, _) => ScheduleLayoutFollow();
         Scroller.ScrollChanged += (_, e) =>
         {
+            // A native scroll is committed only when a transition finishes. Keep the
+            // same on-screen position until ScrollViewer has processed that commit.
+            if (_ownsVisualOffset)
+            {
+                if (!_scrollMoving)
+                {
+                    _visualOffset = Math.Clamp(_visualOffset, 0, Math.Max(0, Scroller.ScrollableHeight));
+                    _targetScrollOffset = _visualOffset;
+                }
+                ScrollTranslation.Y = Scroller.VerticalOffset - _visualOffset;
+                if (!_scrollMoving && Math.Abs(Scroller.VerticalOffset - _visualOffset) < .1)
+                {
+                    _ownsVisualOffset = false;
+                    ScrollTranslation.Y = 0;
+                }
+            }
             if (e.ViewportHeightChange != 0 || e.ViewportWidthChange != 0 || e.ExtentHeightChange != 0) ScheduleLayoutFollow();
         };
         Scroller.PreviewMouseWheel += ScrollWheel;
@@ -73,6 +91,7 @@ public partial class AnimatedLyricsView : UserControl
         ArgumentNullException.ThrowIfNull(document);
         if (ReferenceEquals(document, _document)) return;
         StopMotion();
+        _karaokePreparationVersion++;
         _document = document;
         _clock.Update(0, false, forceRebase: true);
         _activeIndex = -1;
@@ -129,11 +148,22 @@ public partial class AnimatedLyricsView : UserControl
         }
         var previous = _activeIndex;
         _activeIndex = index;
-        for (var rowIndex = 0; rowIndex < _rows.Count; rowIndex++)
-            ApplyFocus(_rows[rowIndex], rowIndex == index, CanAnimate(_rows[rowIndex]));
+        // Beyond five neighbours the focus scale is constant. A normal line change
+        // touches only the old and new neighbourhoods, regardless of song length.
+        if (previous < 0 || index < 0)
+            for (var rowIndex = 0; rowIndex < _rows.Count; rowIndex++) ApplyRowFocus(rowIndex);
+        else
+        {
+            for (var rowIndex = Math.Max(0, previous - 5); rowIndex <= Math.Min(_rows.Count - 1, previous + 5); rowIndex++) ApplyRowFocus(rowIndex);
+            for (var rowIndex = Math.Max(0, index - 5); rowIndex <= Math.Min(_rows.Count - 1, index + 5); rowIndex++)
+                if (Math.Abs(rowIndex - previous) > 5) ApplyRowFocus(rowIndex);
+        }
         if (index >= 0 && index < _rows.Count) _rows[index].Main.UpdatePlayback(positionMs + _offsetMs);
         if (!_manualScrolling && IsVisible) CenterActiveLine(true);
+        ScheduleKaraokePreparation();
     }
+
+    private void ApplyRowFocus(int index) => ApplyFocus(_rows[index], index == _activeIndex, CanAnimate(_rows[index]));
 
     public void ApplyAppearance(LyricAppearanceSettings appearance)
     {
@@ -166,7 +196,9 @@ public partial class AnimatedLyricsView : UserControl
             Visibility = parts.Length > 1 && parts.Skip(1).Any(x => !string.IsNullOrWhiteSpace(x)) ? Visibility.Visible : Visibility.Collapsed,
             LineStackingStrategy = LineStackingStrategy.BlockLineHeight
         };
-        var content = new StackPanel();
+        // Each line is a small reusable surface. Scrolling and focus scaling move
+        // these surfaces instead of retessellating every outlined character.
+        var content = new StackPanel { CacheMode = new BitmapCache(1.5) };
         content.Children.Add(main); content.Children.Add(translation);
         var scale = new ScaleTransform(1, 1);
         var slide = new TranslateTransform();
@@ -186,7 +218,7 @@ public partial class AnimatedLyricsView : UserControl
         };
         // Keyboard navigation gets the same smooth centering as playback, never a native jump.
         button.RequestBringIntoView += (_, e) => e.Handled = true;
-        var row = new LineVisual(button, content, main, translation, scale, slide);
+        var row = new LineVisual(index, button, content, main, translation, scale, slide);
         StyleRow(row);
         ApplyFocus(row, false, false);
         return row;
@@ -217,7 +249,7 @@ public partial class AnimatedLyricsView : UserControl
         AnimateColor(row.TranslationBrush, _translationColor, duration, animate);
         AnimateDouble(row.Main, OpacityProperty, active ? 1 : .72, duration, animate);
         AnimateDouble(row.Translation, OpacityProperty, active ? .9 : .55, duration, animate);
-        var scale = _activeIndex < 0 ? 1 : LyricScrollMath.FocusScale(_rows.IndexOf(row) - _activeIndex, _appearance.MainFocusScale);
+        var scale = _activeIndex < 0 ? 1 : LyricScrollMath.FocusScale(row.Index - _activeIndex, _appearance.MainFocusScale);
         AnimateDouble(row.Scale, ScaleTransform.ScaleXProperty, scale, duration, animate);
         AnimateDouble(row.Scale, ScaleTransform.ScaleYProperty, scale, duration, animate);
         row.Slide.BeginAnimation(TranslateTransform.YProperty, null);
@@ -230,7 +262,7 @@ public partial class AnimatedLyricsView : UserControl
     private bool CanAnimate(LineVisual row)
     {
         if (!IsVisible || !_appearance.AnimationsEnabled || _appearance.LyricTransition == "None" || !row.Button.IsArrangeValid) return false;
-        return LyricScrollMath.IsInViewport(RowTop(row), row.Button.ActualHeight, Scroller.VerticalOffset, Scroller.ViewportHeight);
+        return LyricScrollMath.IsInViewport(RowTop(row), row.Button.ActualHeight, CurrentScrollOffset, Scroller.ViewportHeight);
     }
 
     private void ScheduleLayoutFollow(bool animate = false)
@@ -253,8 +285,23 @@ public partial class AnimatedLyricsView : UserControl
                 // already included in the measurements below and must not enqueue a second snap.
                 Scroller.UpdateLayout();
                 if (!_manualScrolling) CenterActiveLine(_animateAfterLayout, preserveMotion: true);
+                ScheduleKaraokePreparation();
             }
             finally { _layoutScheduled = false; _animateAfterLayout = false; }
+        });
+    }
+
+    private void ScheduleKaraokePreparation()
+    {
+        if (!IsLoaded || !IsVisible) return;
+        var next = Math.Max(0, _activeIndex + 1);
+        if (next >= _rows.Count || _rows[next].Main.Words.Count == 0) return;
+        var version = ++_karaokePreparationVersion;
+        Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, () =>
+        {
+            if (version != _karaokePreparationVersion || !IsVisible || next >= _rows.Count) return;
+            var text = _rows[next].Main;
+            if (text.IsArrangeValid && text.ActualWidth > 0) text.PrepareKaraokeLayout();
         });
     }
 
@@ -274,7 +321,7 @@ public partial class AnimatedLyricsView : UserControl
     private void ScrollTo(double target, bool animate, double? durationMs = null, bool preserveMotion = false)
     {
         target = Math.Clamp(double.IsFinite(target) ? target : 0, 0, Math.Max(0, Scroller.ScrollableHeight));
-        var current = Scroller.VerticalOffset;
+        var current = CurrentScrollOffset;
         if (preserveMotion && _scrollMoving && _appearance.AnimationsEnabled && IsVisible)
         {
             // A late remeasure may change the destination, but it cannot discard the motion.
@@ -290,12 +337,11 @@ public partial class AnimatedLyricsView : UserControl
                 return;
             }
         }
-        StopScroll();
+        _scrollMoving = false;
         _targetScrollOffset = target;
         if (!animate || !_appearance.AnimationsEnabled || !IsVisible || Math.Abs(target - current) < .5)
         {
-            SetValue(AnimatedOffsetProperty, target);
-            Scroller.ScrollToVerticalOffset(target);
+            CommitScroll(target);
             return;
         }
         _scrollFrom = current;
@@ -307,18 +353,28 @@ public partial class AnimatedLyricsView : UserControl
 
     private void StopScroll()
     {
-        _scrollVersion++;
         _scrollMoving = false;
-        var current = Scroller.VerticalOffset;
-        SetValue(AnimatedOffsetProperty, current);
-        BeginAnimation(AnimatedOffsetProperty, null);
+        var current = CurrentScrollOffset;
+        CommitScroll(current);
         _targetScrollOffset = current;
     }
 
-    private static void OffsetChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    private void SetVisualScroll(double offset)
     {
-        var view = (AnimatedLyricsView)sender;
-        view.Scroller?.ScrollToVerticalOffset((double)args.NewValue);
+        _visualOffset = offset;
+        _ownsVisualOffset = true;
+        ScrollTranslation.Y = Scroller.VerticalOffset - offset;
+    }
+
+    private void CommitScroll(double offset)
+    {
+        SetVisualScroll(offset);
+        if (Math.Abs(Scroller.VerticalOffset - offset) < .1)
+        {
+            _ownsVisualOffset = false;
+            ScrollTranslation.Y = 0;
+        }
+        else Scroller.ScrollToVerticalOffset(offset);
     }
 
     private void SuspendFollow()
@@ -354,7 +410,7 @@ public partial class AnimatedLyricsView : UserControl
 
     private void ScrollWheel(object sender, MouseWheelEventArgs args)
     {
-        var previousTarget = _manualScrolling ? _targetScrollOffset : Scroller.VerticalOffset;
+        var previousTarget = _manualScrolling ? _targetScrollOffset : CurrentScrollOffset;
         SuspendFollow();
         var wheelLines = SystemParameters.WheelScrollLines;
         var step = wheelLines < 0 ? Scroller.ViewportHeight * .82 : Math.Max(1, wheelLines) * 25;
@@ -366,8 +422,8 @@ public partial class AnimatedLyricsView : UserControl
     {
         var target = args.Key switch
         {
-            Key.PageUp => Scroller.VerticalOffset - Scroller.ViewportHeight * .8,
-            Key.PageDown => Scroller.VerticalOffset + Scroller.ViewportHeight * .8,
+            Key.PageUp => CurrentScrollOffset - Scroller.ViewportHeight * .8,
+            Key.PageDown => CurrentScrollOffset + Scroller.ViewportHeight * .8,
             Key.Home => 0,
             Key.End => Scroller.ScrollableHeight,
             _ => double.NaN
@@ -391,6 +447,7 @@ public partial class AnimatedLyricsView : UserControl
 
     private void StopMotion()
     {
+        _karaokePreparationVersion++;
         _animateAfterLayout = false;
         _followTimer.Stop();
         StopScroll();
@@ -411,12 +468,17 @@ public partial class AnimatedLyricsView : UserControl
     }
     private void RenderFrame(object? sender, EventArgs args)
     {
+        if (args is RenderingEventArgs rendering)
+        {
+            if (rendering.RenderingTime == _lastRenderingTime) return;
+            _lastRenderingTime = rendering.RenderingTime;
+        }
         if (_clock.IsPlaying) UpdatePositionCore((long)_clock.PositionMs, _offsetMs);
         if (!_scrollMoving) return;
         var progress = Stopwatch.GetElapsedTime(_scrollStarted).TotalMilliseconds / _scrollDuration;
         var value = _scrollFrom + (_targetScrollOffset - _scrollFrom) * LyricScrollMath.EaseOut(progress);
-        Scroller.ScrollToVerticalOffset(value);
-        if (progress >= 1) _scrollMoving = false;
+        SetVisualScroll(value);
+        if (progress >= 1) { _scrollMoving = false; CommitScroll(_targetScrollOffset); }
     }
 
     private static bool IsScrollBarInput(DependencyObject? source)
@@ -438,13 +500,13 @@ public partial class AnimatedLyricsView : UserControl
         var current = brush.Color;
         brush.BeginAnimation(SolidColorBrush.ColorProperty, null);
         brush.Color = target;
-        if (animate) brush.BeginAnimation(SolidColorBrush.ColorProperty, new ColorAnimation(current, target, duration) { EasingFunction = Ease(), FillBehavior = FillBehavior.Stop });
+        if (animate && current != target) brush.BeginAnimation(SolidColorBrush.ColorProperty, new ColorAnimation(current, target, duration) { EasingFunction = Ease(), FillBehavior = FillBehavior.Stop });
     }
 
     private static void AnimateDouble(DependencyObject target, DependencyProperty property, double value, TimeSpan duration, bool animate)
     {
         var current = (double)target.GetValue(property);
-        var animation = animate ? new DoubleAnimation(current, value, duration) { EasingFunction = Ease(), FillBehavior = FillBehavior.Stop } : null;
+        var animation = animate && Math.Abs(current - value) > .0001 ? new DoubleAnimation(current, value, duration) { EasingFunction = Ease(), FillBehavior = FillBehavior.Stop } : null;
         if (target is Animatable animatable) { animatable.BeginAnimation(property, null); target.SetValue(property, value); if (animation is not null) animatable.BeginAnimation(property, animation); }
         else if (target is UIElement element) { element.BeginAnimation(property, null); target.SetValue(property, value); if (animation is not null) element.BeginAnimation(property, animation); }
         else target.SetValue(property, value);
@@ -452,6 +514,7 @@ public partial class AnimatedLyricsView : UserControl
 
     private sealed class LineVisual
     {
+        public int Index { get; }
         public Button Button { get; }
         public StackPanel Content { get; }
         public OutlinedLyricsText Main { get; }
@@ -460,9 +523,9 @@ public partial class AnimatedLyricsView : UserControl
         public TranslateTransform Slide { get; }
         public SolidColorBrush MainBrush { get; } = new();
         public SolidColorBrush TranslationBrush { get; } = new();
-        public LineVisual(Button button, StackPanel content, OutlinedLyricsText main, TextBlock translation, ScaleTransform scale, TranslateTransform slide)
+        public LineVisual(int index, Button button, StackPanel content, OutlinedLyricsText main, TextBlock translation, ScaleTransform scale, TranslateTransform slide)
         {
-            Button = button; Content = content; Main = main; Translation = translation; Scale = scale; Slide = slide;
+            Index = index; Button = button; Content = content; Main = main; Translation = translation; Scale = scale; Slide = slide;
             Main.Foreground = MainBrush; Translation.Foreground = TranslationBrush;
         }
     }

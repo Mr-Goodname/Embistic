@@ -61,7 +61,8 @@ public sealed class SpectrumSettings
     private static string Color(string? value, string fallback)
     {
         value = value?.Trim();
-        if (value is null || !Regex.IsMatch(value, @"^#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$")) return fallback;
+        if (value is null || !Regex.IsMatch(value, @"^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$")) return fallback;
+        if (value.Length == 4) value = $"#{value[1]}{value[1]}{value[2]}{value[2]}{value[3]}{value[3]}";
         return value.ToUpperInvariant();
     }
 }

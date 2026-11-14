@@ -62,7 +62,7 @@ internal static class Program
         appearance.SungOutlineColor = "#FF0000"; appearance.UnsungOutlineColor = "#00FF00";
         appearance.SungOutlineWidth = 3.2; appearance.UnsungOutlineWidth = .8;
         overlay.ApplyAppearance(appearance);
-        Check(surface.Background is SolidColorBrush brush && brush.Color == Color.FromRgb(0x11, 0x22, 0x33) && brush.Opacity == .5, "Explicit background switch applies color and opacity");
+        Check(surface.Background is SolidColorBrush brush && brush.Color.A == 0, "Legacy background preference leaves the non-hovered overlay fully transparent");
         Check(current.SungOutlineWidth == 3.2 && current.UnsungOutlineWidth == .8 && ((SolidColorBrush)current.SungBrush).Color == Color.FromRgb(0x12, 0xAB, 0xCD), "Sung and unsung text use independent paints and outline widths");
         var document = LyricsService.ParseLrc("[00:01]The melody carries us home\n[00:01]旋律带我们回家\n[00:04]And the night is still young\n[00:04]夜还很漫长");
         overlay.SetTrack("A little light", "Embistic");

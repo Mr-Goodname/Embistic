@@ -24,6 +24,11 @@ internal static class Program
             Window? window = null;
             try
             {
+                if (Environment.GetCommandLineArgs().Contains("--performance"))
+                {
+                    window = await MeasurePlaybackAsync();
+                    return;
+                }
                 Check(LyricScrollMath.CenterOffset(800, 100, 500, 2000) == 600, "Centers a measured line in the viewport");
                 Check(LyricScrollMath.CenterOffset(800, 240, 500, 2000) == 670, "Wrapped translations contribute to the center");
                 Check(LyricScrollMath.CenterOffset(0, 100, 500, 2000) == 0, "Clamps the leading edge");
@@ -42,8 +47,11 @@ internal static class Program
                 view.UpdatePosition(0);
                 await Task.Delay(180);
                 var rows = (StackPanel)view.FindName("RowsPanel");
+                var scroller = (ScrollViewer)view.FindName("Scroller");
                 Check(rows.Children.Count == 24 && ((Button)rows.Children[2]).ActualHeight > ((Button)rows.Children[0]).ActualHeight, "Rows keep natural multi-line translation heights");
                 var before = view.CurrentScrollOffset;
+                var nativeBefore = scroller.VerticalOffset;
+                var rowBefore = ((Button)rows.Children[2]).TranslatePoint(new Point(), view).Y;
                 var scrollClock = Stopwatch.StartNew();
                 view.UpdatePosition(10000);
                 var target = view.TargetScrollOffset;
@@ -51,6 +59,9 @@ internal static class Program
                 Check(Math.Abs(view.CurrentScrollOffset - before) < 8, "A transition does not jump to its destination immediately");
                 await Task.Delay(160);
                 Check(view.CurrentScrollOffset > before + 1 && view.CurrentScrollOffset < target - 1, $"Scroll offset progresses through intermediate values (from={before:F1}, current={view.CurrentScrollOffset:F1}, to={target:F1})");
+                Check(Math.Abs(scroller.VerticalOffset - nativeBefore) < .1 &&
+                    Math.Abs(((Button)rows.Children[2]).TranslatePoint(new Point(), view).Y - rowBefore + view.CurrentScrollOffset - before) < 1,
+                    "Intermediate frames move the actual lyric visuals without requesting native scroll layout");
                 var focusedContent = (StackPanel)((Button)rows.Children[2]).Content;
                 var focusedMain = (OutlinedLyricsText)focusedContent.Children[0];
                 Check(focusedMain.Opacity > .72 && focusedMain.Opacity < 1, "Active lyric opacity transitions through intermediate values");
@@ -74,6 +85,8 @@ internal static class Program
                     $"Layout retargeting retains the original 1200ms animation deadline (elapsed={scrollClock.Elapsed.TotalMilliseconds:F0}ms)");
                 await Task.Delay(50);
                 Check(Math.Abs(view.CurrentScrollOffset - target) < 2, "Repeated ticks on one lyric do not restart scrolling");
+                Check(Math.Abs(scroller.VerticalOffset - target) < 2 && Math.Abs(((TranslateTransform)((StackPanel)view.FindName("LineHost")).RenderTransform).Y) < .1,
+                    "Settled animation commits the native scroll offset and releases its render displacement");
                 var focusedScale = (ScaleTransform)((TransformGroup)focusedContent.RenderTransform).Children[0];
                 Check(Math.Abs(focusedScale.ScaleX - 1.18) < .001 && focusedMain.Opacity == 1, "Active lyric settles at the configured focus scale and opacity");
                 var neighbor = (StackPanel)((Button)rows.Children[3]).Content;
@@ -89,7 +102,6 @@ internal static class Program
                 Check(view.ActiveLineIndex == 3 && view.CurrentScrollOffset < view.TargetScrollOffset - 1,
                     "A playback transition requested before row layout keeps its animation intent");
                 await WaitUntilAsync(() => Math.Abs(view.CurrentScrollOffset - view.TargetScrollOffset) < .1, "Deferred playback transition did not reach its measured destination");
-                var scroller = (ScrollViewer)view.FindName("Scroller");
                 scroller.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
                 await Task.Delay(300);
                 Check(!view.IsFollowingPlayback, "Mouse wheel suspends automatic following");
@@ -136,6 +148,7 @@ internal static class Program
                 Check(Math.Abs(view.InterpolatedPositionMs - 12000) < 1, "Paused playback freezes the interpolated lyric clock");
                 view.UpdatePlayback(1000, false);
                 Check(Math.Abs(view.InterpolatedPositionMs - 1000) < 1, "Seeking immediately rebases the playback clock");
+                CheckRetainedKaraoke();
                 if (Environment.GetCommandLineArgs().Skip(1).FirstOrDefault() is { } imagePath)
                 {
                     view.ApplyAppearance(new LyricAppearanceSettings());
@@ -162,6 +175,99 @@ internal static class Program
         if (!condition) throw new InvalidOperationException("FAIL: " + message);
         _passed++;
         Console.WriteLine("PASS: " + message);
+    }
+
+    private static void CheckRetainedKaraoke()
+    {
+        var line = new LyricsLine(TimeSpan.FromSeconds(1), "你好世界 á 😀")
+        {
+            Words = [new LyricsWord(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), "你好世界", 0),
+                new LyricsWord(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(4), "á", 5),
+                new LyricsWord(TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5), "😀", 8)]
+        };
+        var text = new OutlinedLyricsText { FontSize = 36, Foreground = Brushes.White, TextAlignment = TextAlignment.Left };
+        text.ApplyLyricsStyle(new LyricAppearanceSettings { SungColor = "#10CD77" });
+        text.SetLine(line, line.Text);
+        text.Measure(new Size(185, 200));
+        text.Arrange(new Rect(0, 0, 185, 200));
+        text.UpdatePlayback(900);
+        var before = DrawPixels(text, 185, 200);
+        var layouts = text.LayoutBuildCount;
+        var renders = text.RenderCount;
+        for (var index = 0; index < 120; index++) text.UpdatePlayback(1000 + index * 12);
+        var during = DrawPixels(text, 185, 200);
+        Check(!before.SequenceEqual(during), "Retained word clipping updates visible karaoke pixels across wrapped text");
+        Check(text.LayoutBuildCount == layouts && text.RenderCount == renders && text.KaraokeLayoutBuildCount == 1,
+            "Word frames reuse text shaping and drawing instructions instead of rebuilding text or glyph layouts");
+        text.UpdatePlayback(4900);
+        var last = DrawPixels(text, 185, 200);
+        Check(!last.SequenceEqual(during), "Combining characters and emoji keep their timed highlights");
+        text.UpdatePlayback(900);
+        Check(DrawPixels(text, 185, 200).SequenceEqual(before), "Seeking backwards clears retained sung clipping without stale highlighted characters");
+    }
+
+    private static byte[] DrawPixels(FrameworkElement element, int width, int height)
+    {
+        element.UpdateLayout();
+        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(element);
+        var pixels = new byte[width * height * 4];
+        bitmap.CopyPixels(pixels, width * 4, 0);
+        return pixels;
+    }
+
+    private static async Task<Window> MeasurePlaybackAsync()
+    {
+        var view = new AnimatedLyricsView();
+        var window = new Window { Content = view, Width = 760, Height = 800, ShowActivated = false, ShowInTaskbar = false,
+            Background = new SolidColorBrush(Color.FromRgb(12, 16, 21)), Title = "Embistic lyric rendering measurement" };
+        view.ApplyAppearance(new LyricAppearanceSettings { ScrollDurationMs = 700, TransitionDurationMs = 320 });
+        var text = "风经过安静的夏天把故事留在你我之间";
+        var lines = Enumerable.Range(0, 240).Select(index => new LyricsLine(TimeSpan.FromMilliseconds(index * 900), text + "\nA quiet summer carries our stories through the melody.")
+        {
+            Words = text.Select((character, word) => new LyricsWord(TimeSpan.FromMilliseconds(index * 900 + word * 45),
+                TimeSpan.FromMilliseconds(index * 900 + (word + 1) * 45), character.ToString(), word)).ToArray()
+        }).ToArray();
+        window.Show();
+        view.SetDocument(new LyricsDocument { IsSynced = true, Lines = lines });
+        var playback = Stopwatch.StartNew();
+        var observations = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        observations.Tick += (_, _) => view.UpdatePlayback(27000 + playback.ElapsedMilliseconds, true);
+        observations.Start();
+        view.UpdatePlayback(27000, true);
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        await Task.Delay(2500);
+        var scrollChanges = 0;
+        var layoutPasses = 0;
+        var frames = new List<double>();
+        var previous = TimeSpan.Zero;
+        var scroller = (ScrollViewer)view.FindName("Scroller");
+        ScrollChangedEventHandler onScroll = (_, e) => { if (e.VerticalChange != 0) scrollChanges++; };
+        EventHandler onLayout = (_, _) => layoutPasses++;
+        EventHandler onFrame = (_, args) =>
+        {
+            var time = ((RenderingEventArgs)args).RenderingTime;
+            if (time == previous) return;
+            if (previous != TimeSpan.Zero) frames.Add((time - previous).TotalMilliseconds);
+            previous = time;
+        };
+        scroller.ScrollChanged += onScroll;
+        scroller.LayoutUpdated += onLayout;
+        CompositionTarget.Rendering += onFrame;
+        var texts = ((StackPanel)view.FindName("RowsPanel")).Children.Cast<Button>().Select(button => (OutlinedLyricsText)((StackPanel)button.Content).Children[0]).ToArray();
+        var layoutBuilds = texts.Sum(text => text.LayoutBuildCount);
+        var renders = texts.Sum(text => text.RenderCount);
+        var allocated = GC.GetAllocatedBytesForCurrentThread();
+        await Task.Delay(6500);
+        allocated = GC.GetAllocatedBytesForCurrentThread() - allocated;
+        observations.Stop();
+        view.UpdatePlayback(27000 + playback.ElapsedMilliseconds, false);
+        scroller.ScrollChanged -= onScroll;
+        scroller.LayoutUpdated -= onLayout;
+        CompositionTarget.Rendering -= onFrame;
+        frames.Sort();
+        Console.WriteLine($"LYRIC PERF: frames={frames.Count}, median={frames[frames.Count / 2]:F2}ms, p95={frames[(int)(frames.Count * .95)]:F2}ms, max={frames[^1]:F2}ms, nativeScrollChanges={scrollChanges}, layoutUpdates={layoutPasses}, textLayouts={texts.Sum(text => text.LayoutBuildCount) - layoutBuilds}, textRenders={texts.Sum(text => text.RenderCount) - renders}, UIAllocated={allocated / 1024d:F0}KiB");
+        return window;
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, string failure)

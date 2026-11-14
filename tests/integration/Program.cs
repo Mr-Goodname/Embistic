@@ -137,12 +137,26 @@ internal static class Program
             Pump(1950);
             Check(Find<Grid>(immersive, "TopOptions").Opacity == 0 && Find<Border>(window, "BottomPlayerBar").Opacity == 0
                 && Find<Border>(window, "TitleBar").Opacity == 0, "Idle immersive options, title and player controls hide automatically");
-            var options = Find<Popup>(immersive, "OptionsPopup");
-            options.Child.Opacity = 0;
+            CheckImmersiveViewport(window, immersive, controlsShown: false);
+            var lyricWidth = immersive.LyricsView.ActualWidth;
+            var lyricHeight = immersive.LyricsView.ActualHeight;
             Click(immersive, "OptionsButton"); Pump(1900);
-            Check(options.IsOpen && Find<Grid>(immersive, "TopOptions").Opacity == 1
-                && Find<Border>(window, "BottomPlayerBar").Opacity == 1, "Open lyrics popup keeps immersive controls visible");
-            Click(immersive, "OptionsButton");
+            Check(immersive.IsSettingsPanelOpen && Find<Grid>(immersive, "TopOptions").Opacity == 1
+                && Find<Border>(window, "BottomPlayerBar").Opacity == 1, "Inline lyrics settings keep immersive controls visible");
+            CheckImmersiveViewport(window, immersive, controlsShown: true);
+            Check(Math.Abs(immersive.LyricsView.ActualWidth - lyricWidth) < .1 && Math.Abs(immersive.LyricsView.ActualHeight - lyricHeight) < .1,
+                "Inline settings occupy the cover column without resizing the lyric preview");
+            var editor = (LyricAppearanceEditor)Find<ContentControl>(immersive, "SettingsPanelContent").Content;
+            var saves = 0;
+            Set(window, "_saveSettings", new Action<AppSettings>(_ => saves++));
+            Find<Slider>(editor, "MainSizeSlider").Value = 31.5;
+            PumpUntil(() => saves > 0);
+            Check(Math.Abs(settings.Appearance.MainFontSize - 31.5) < .01 && saves > 0, "Slider changes preview and persist without a save button");
+            var lineSaveCount = saves;
+            Find<Slider>(editor, "MainSizeSlider").Value = 29;
+            immersive.HideSettingsPanel(); Pump(60);
+            Check(Math.Abs(settings.Appearance.MainFontSize - 29) < .01 && saves > lineSaveCount, "Closing inline settings flushes the final slider change");
+            Set(window, "_saveSettings", new Action<AppSettings>(_ => { }));
             var playButton = Find<Button>(window, "PlayPauseButton");
             Keyboard.Focus(playButton);
             playButton.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(window), Environment.TickCount, Key.Tab)
@@ -166,11 +180,20 @@ internal static class Program
             Task.Run(() => immersive.SetSpectrum(bins, 48000)).GetAwaiter().GetResult(); Pump(150);
             Check(spectra.Select((view, index) => view.IsVisible && view.RenderedFrameCount > beforeFrames[index]).All(value => value),
                 "Capture-thread spectrum frames reach all four edges and the cover ring");
-            var ring = spectra[4]; var artwork = Find<System.Windows.Shapes.Ellipse>(immersive, "AlbumArtwork");
+            var ring = spectra[4]; var disc = Find<Grid>(immersive, "DiscRotor");
             Check(ring.IsRadial && Math.Abs(ring.ActualWidth - ring.ActualHeight) < .01
-                && Math.Abs(artwork.Width / ring.ActualWidth - .7) < .01, "Cover ring is square with the album artwork at seventy percent diameter");
+                && ring.ActualWidth - 2 * ring.RadialInset > disc.Width, "Cover ring surrounds the entire record with a clear gap");
             Check(spectra[2].ActualWidth > immersive.ActualHeight * .8 && spectra[3].ActualWidth > immersive.ActualHeight * .8,
                 "Side spectra span the height of the immersive canvas");
+            Invoke(window, "ShowTitleChrome"); Invoke(window, "ShowPlayerChrome"); Invoke(immersive, "ShowOptions"); Pump(80);
+            CheckImmersiveViewport(window, immersive, controlsShown: true);
+            var topBaseline = spectra[1].TranslatePoint(new Point(0, spectra[1].ActualHeight), immersive).Y;
+            var optionsBottom = Find<Grid>(immersive, "TopOptions").TranslatePoint(new Point(0, Find<Grid>(immersive, "TopOptions").ActualHeight), immersive).Y;
+            Check(Math.Abs(topBaseline - optionsBottom - 10) < .1, "Visible top spectrum begins below the complete options bar");
+            Pump(1900);
+            CheckImmersiveViewport(window, immersive, controlsShown: false);
+            Check(Math.Abs(spectra[1].TranslatePoint(new Point(0, spectra[1].ActualHeight), immersive).Y) < .1,
+                "Hidden top options leave the top spectrum baseline at the canvas boundary");
             immersive.ApplySpectrum(new SpectrumSettings { ShowTop = false, ShowBottom = false, ShowLeft = false, ShowRight = false, ShowRing = true }); Pump();
             Check(ring.IsVisible && spectra.Take(4).All(view => !view.IsVisible), "Ring-only selection hides every edge spectrum");
             immersive.ApplySpectrum(settings.Spectrum); immersive.SetSpectrumPlaying(false);
@@ -249,6 +272,13 @@ internal static class Program
             Set(window, "_playing", false); Invoke(window, "NotifyNowPlaying");
             Check(!Get<bool>(immersive, "_rotating"), "Pausing stops record rotation");
             Check(!Get<AudioSpectrumService>(window, "_spectrumService").IsRunning, "UI checks never capture a real audio endpoint");
+            var lyricsNav = Find<RadioButton>(window, "LyricsNav");
+            Check((string)lyricsNav.Tag == "lyricSettings", "Sidebar lyrics routes to appearance and sources instead of the immersive player");
+            Invoke(window, "ShowPage", (string)lyricsNav.Tag); Pump();
+            Check(!immersive.IsVisible && Find<ContentControl>(window, "LyricsSettingsHost").Content is LyricAppearanceEditor,
+                "Sidebar lyric settings are directly editable in the main page");
+            Click(window, "PlayerCoverButton"); Pump();
+            Check(immersive.IsVisible && !immersive.IsSettingsPanelOpen, "Player cover remains the immersive entry and opens a clear canvas");
             settings.Display.RadioStations.Add(new RadioStation { Name = "测试电台", Url = "https://radio.invalid/live" });
             Invoke(window, "LibraryShortcut_Click", new Button { DataContext = window.LibraryShortcuts.Single(item => item.Id == "radio") }, new RoutedEventArgs());
             Pump();
@@ -280,6 +310,21 @@ internal static class Program
         }
     }
 
+    private static void CheckImmersiveViewport(MainWindow window, ImmersivePlayerView immersive, bool controlsShown)
+    {
+        var root = Find<Grid>(window, "WindowFrame");
+        var canvasTop = immersive.TranslatePoint(new Point(), root).Y;
+        var spectrum = immersive.Spectrum;
+        var bottom = spectrum.TranslatePoint(new Point(0, spectrum.ActualHeight), root).Y;
+        var player = Find<Border>(window, "BottomPlayerBar");
+        var expectedBottom = controlsShown ? player.TranslatePoint(new Point(), root).Y : root.ActualHeight;
+        var offset = Find<TranslateTransform>(immersive, "BottomSpectrumSlide").Y;
+        Check(Math.Abs(canvasTop) < .1 && Math.Abs(immersive.ActualHeight - root.ActualHeight) < .1,
+            "Immersive canvas covers the entire viewport without reserved caption or player strips");
+        Check(Math.Abs(bottom - expectedBottom) < .1 && Math.Abs(offset - (controlsShown ? -player.ActualHeight : 0)) < .1,
+            controlsShown ? "Visible player lifts the spectrum to the player's upper edge" : "Hidden player leaves the bottom spectrum flush with the viewport edge");
+    }
+
     private static void CaptureDocumentation(MainWindow window, AppSettings settings, IReadOnlyList<Album> albums, Track track, string root)
     {
         var directory = Path.Combine(root, "docs", "images");
@@ -308,7 +353,19 @@ internal static class Program
         var bins = Enumerable.Range(0, 1024).Select(index => (float)(.35 * Math.Exp(-index / 600.0) * (.15 + .85 * Math.Pow(Math.Sin(index / 27.0), 2)))).ToArray();
         for (var frame = 0; frame < 58; frame++) { immersive.SetSpectrum(bins, 48000); Pump(40); }
         immersive.SetSpectrumStatus("");
+        var captureRoot = (FrameworkElement)window.Content;
+        Console.WriteLine($"Lyrics capture viewport={captureRoot.ActualWidth}x{captureRoot.ActualHeight}; descendant bounds={VisualTreeHelper.GetDescendantBounds(captureRoot)}; spectrum bottom={immersive.Spectrum.TranslatePoint(new Point(0, immersive.Spectrum.ActualHeight), captureRoot).Y}; bottom slide={Find<TranslateTransform>(immersive, "BottomSpectrumSlide").Y}");
+        CheckImmersiveViewport(window, immersive, controlsShown: false);
         Render((FrameworkElement)window.Content, Path.Combine(directory, "lyrics.png"));
+        Click(immersive, "OptionsButton"); Pump(200);
+        Render((FrameworkElement)window.Content, Path.Combine(directory, "lyrics-settings.png"));
+        immersive.HideSettingsPanel();
+        foreach (var mode in new[] { "Circle", "RoundedSquare" })
+        {
+            immersive.CoverPresentation = mode; Pump(100);
+            Render((FrameworkElement)window.Content, Path.Combine(directory, "lyrics-" + mode.ToLowerInvariant() + ".png"));
+        }
+        immersive.CoverPresentation = "Vinyl";
         immersive.SetSpectrumPlaying(false);
         Console.WriteLine("Documentation screenshots: " + directory);
     }
@@ -359,7 +416,12 @@ internal static class Program
         using (var drawing = surface.RenderOpen())
         {
             drawing.DrawRectangle((Brush)element.FindResource("Bg"), null, new Rect(0, 0, element.ActualWidth, element.ActualHeight));
-            drawing.DrawRectangle(new VisualBrush(element), null, new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+            // A hidden chrome control is translated outside the HWND. Relative
+            // VisualBrush bounds include those descendants and would shrink the
+            // viewport between artificial top/bottom bands (and squash covers).
+            var viewport = new Rect(0, 0, element.ActualWidth, element.ActualHeight);
+            drawing.DrawRectangle(new VisualBrush(element) { ViewboxUnits = BrushMappingMode.Absolute, Viewbox = viewport,
+                Stretch = Stretch.Fill }, null, viewport);
         }
         bitmap.Render(surface); SaveBitmap(bitmap, path);
     }
@@ -476,7 +538,7 @@ internal static class Program
     private static int NativeHitTest(Window window, Point point) => (int)SendMessage(new WindowInteropHelper(window).Handle, 0x84, IntPtr.Zero, NativePoint(point));
     private static void StopTimers(MainWindow window)
     {
-        foreach (var name in new[] { "_timer", "_searchTimer", "_volumeTimer" }) Get<DispatcherTimer>(window, name).Stop();
+        foreach (var name in new[] { "_timer", "_searchTimer", "_volumeTimer", "_inlineSaveTimer" }) Get<DispatcherTimer>(window, name).Stop();
     }
     private static T Find<T>(FrameworkElement element, string name) where T : class =>
         element.FindName(name) as T ?? throw new InvalidOperationException("Missing UI element: " + name);
