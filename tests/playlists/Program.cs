@@ -195,7 +195,8 @@ internal static class Program
         var view = new QueuePopupView(); view.SetQueue(tracks);
         var moved = 0; view.MoveRequested += (from, to) => { tracks.Move(from, to); moved++; };
         var gate = new object();
-        var moves = 0; var downs = 0; var ups = 0; var dragOvers = 0; var drops = 0; var dragTarget = -1;
+        var moves = 0; var downs = 0; var ups = 0; var dragEnters = 0; var dragOvers = 0; var drops = 0;
+        var dragTarget = -1; var dragOverTarget = -1;
         var lastPointer = new Point(); var lastSource = "none";
         Point? requestedPointer = null;
         var pointerRequest = 0; var pointerReceipt = 0;
@@ -218,10 +219,15 @@ internal static class Program
             host.AddHandler(UIElement.PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler((_, e) =>
             { lock (gate) { downs++; lastSource = e.OriginalSource.GetType().Name; } }), true);
             host.AddHandler(UIElement.PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler((_, _) => { lock (gate) ups++; }), true);
+            list.AddHandler(DragDrop.DragEnterEvent, new DragEventHandler((_, e) =>
+            {
+                var row = ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject);
+                lock (gate) { dragEnters++; dragTarget = row is null ? -1 : list.ItemContainerGenerator.IndexFromContainer(row); }
+            }), true);
             list.AddHandler(DragDrop.DragOverEvent, new DragEventHandler((_, e) =>
             {
                 var row = ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject);
-                lock (gate) { dragOvers++; dragTarget = row is null ? -1 : list.ItemContainerGenerator.IndexFromContainer(row); }
+                lock (gate) { dragOvers++; dragTarget = dragOverTarget = row is null ? -1 : list.ItemContainerGenerator.IndexFromContainer(row); }
             }), true);
             list.AddHandler(DragDrop.DropEvent, new DragEventHandler((_, _) => { lock (gate) drops++; }), true);
             if (stressInput)
@@ -246,6 +252,7 @@ internal static class Program
             var activation = host.PointToScreen(new Point(8, 8));
             async Task WaitInput(Func<bool> received, string stage)
             {
+                Console.WriteLine("NATIVE QUEUE WAIT: " + stage);
                 var deadline = Stopwatch.StartNew();
                 bool Ready() { lock (gate) return received(); }
                 while (!Ready() && deadline.ElapsedMilliseconds < 2000) await Task.Delay(5);
@@ -253,8 +260,9 @@ internal static class Program
                 {
                     GetCursorPos(out var win32); GetPhysicalCursorPos(out var physical); GetWindowRect(hwnd, out var bounds);
                     var context = GetThreadDpiAwarenessContext();
-                    lock (gate) throw new InvalidOperationException($"Native queue fixture {stage}; foreground={GetForegroundWindow() == hwnd}, moves={moves}, downs={downs}, ups={ups}, dragOvers={dragOvers}, drops={drops}, target={dragTarget}, source={lastSource}, pointer={lastPointer}, receipt={pointerReceipt}/{pointerRequest}, win32={win32.X},{win32.Y}, physical={physical.X},{physical.Y}, context={context}, awareness={GetAwarenessFromDpiAwarenessContext(context)}, dpi={GetDpiForWindow(hwnd)}, bounds={bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}");
+                    lock (gate) throw new InvalidOperationException($"Native queue fixture {stage}; foreground={GetForegroundWindow() == hwnd}, moves={moves}, downs={downs}, ups={ups}, dragEnters={dragEnters}, dragOvers={dragOvers}, drops={drops}, target={dragTarget}, overTarget={dragOverTarget}, source={lastSource}, pointer={lastPointer}, receipt={pointerReceipt}/{pointerRequest}, win32={win32.X},{win32.Y}, physical={physical.X},{physical.Y}, context={context}, awareness={GetAwarenessFromDpiAwarenessContext(context)}, dpi={GetDpiForWindow(hwnd)}, bounds={bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}");
                 }
+                Console.WriteLine("NATIVE QUEUE ACK: " + stage);
             }
             async Task MoveAndWait(Point target)
             {
@@ -270,24 +278,46 @@ internal static class Program
             }
             var input = Task.Run(async () =>
             {
-                // A native padding click grants foreground input even when Windows
-                // rejects a background process's SetForegroundWindow request.
-                await MoveAndWait(activation);
-                SendMouse(0x0002); await WaitInput(() => downs >= 1, "activation down");
-                SendMouse(0x0004); await WaitInput(() => ups >= 1 && GetForegroundWindow() == hwnd, "activation up / foreground");
-                await MoveAndWait(origin);
-                SendMouse(0x0002); await WaitInput(() => downs >= 2, "handle down");
-                SetCursorPos((int)origin.X + 15, (int)origin.Y + 12);
-                // During DoDragDrop, OLE delivers DragOver instead of MouseMove.
-                // Do not move on or release until the actual drag loop is running.
-                await WaitInput(() => dragOvers > 0, "drag start");
-                SetCursorPos((int)destination.X, (int)destination.Y);
-                await WaitInput(() => dragTarget == 2, "destination DragOver");
-                SendMouse(0x0004); await WaitInput(() => drops == 1, "Drop");
+                try
+                {
+                    // A native padding click grants foreground input even when Windows
+                    // rejects a background process's SetForegroundWindow request.
+                    await MoveAndWait(activation);
+                    SendMouse(0x0002); await WaitInput(() => downs >= 1, "activation down");
+                    SendMouse(0x0004); await WaitInput(() => ups >= 1 && GetForegroundWindow() == hwnd, "activation up / foreground");
+                    await MoveAndWait(origin);
+                    SendMouse(0x0002); await WaitInput(() => downs >= 2, "handle down");
+                    if (!SetCursorPos((int)origin.X + 15, (int)origin.Y + 12)) throw new InvalidOperationException("Native drag-start movement was rejected");
+                    // The first OLE notification is DragEnter. DragOver requires a
+                    // further move and cannot be awaited before sending that move.
+                    await WaitInput(() => dragEnters > 0, "drag start / DragEnter");
+                    if (!SetCursorPos((int)destination.X - 8, (int)destination.Y)) throw new InvalidOperationException("Native target approach was rejected");
+                    await WaitInput(() => dragTarget == 2, "destination enter");
+                    // Crossing into another row can itself raise DragEnter; move
+                    // within that row before requiring the real target DragOver.
+                    if (!SetCursorPos((int)destination.X, (int)destination.Y)) throw new InvalidOperationException("Native target movement was rejected");
+                    await WaitInput(() => dragOverTarget == 2, "destination DragOver");
+                    SendMouse(0x0004); await WaitInput(() => drops == 1, "Drop");
+                }
+                catch (Exception ex)
+                {
+                    // Print from the driver: the UI may still be in DoDragDrop's
+                    // nested OLE loop and unable to observe the faulted task yet.
+                    Console.Error.WriteLine("NATIVE QUEUE DRIVER FAILED: " + ex);
+                    throw;
+                }
+                finally
+                {
+                    // This must run on the background driver, not only in the UI's
+                    // outer finally. Mouse-up releases a failed OLE drag so the UI
+                    // can leave its nested loop and report the original failure.
+                    SendMouse(0x0004);
+                    Console.WriteLine("NATIVE QUEUE DRIVER CLEANUP: mouse released");
+                }
             });
             while (!input.IsCompleted) Pump(15);
             input.GetAwaiter().GetResult();
-            Console.WriteLine($"NATIVE QUEUE: initialForeground={initiallyForeground}, busyUiMs={(stressInput ? 250 : 0)}, moves={moves}, downs={downs}, ups={ups}, dragOvers={dragOvers}, drops={drops}, target={dragTarget}");
+            Console.WriteLine($"NATIVE QUEUE: initialForeground={initiallyForeground}, busyUiMs={(stressInput ? 250 : 0)}, moves={moves}, downs={downs}, ups={ups}, dragEnters={dragEnters}, dragOvers={dragOvers}, drops={drops}, target={dragTarget}, overTarget={dragOverTarget}");
             Check(moved == 1 && tracks.Select(x => x.Id).SequenceEqual(new[] { "native-1", "native-2", "native-0", "native-3", "native-4" }),
                 "Real Windows mouse press/move/drop on the queue handle reorders the native WPF list");
         }

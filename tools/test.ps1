@@ -24,6 +24,7 @@ $projects = @(
 if ($IncludeMedia) { $projects += 'media/MediaSmoke.csproj' }
 $failedProjects = @()
 foreach ($project in $projects) {
+    Write-Output ('Checking ' + $project)
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build.ps1') run --project (Join-Path $projectRoot ('tests/' + $project)) -c Release
     if ($LASTEXITCODE -ne 0) {
         if (!$KeepGoing) { throw ('Checks failed: ' + $project) }
