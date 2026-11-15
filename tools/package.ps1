@@ -7,6 +7,7 @@ if($LASTEXITCODE -ne 0){throw 'Publish failed'}
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md'),(Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $publish -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses') -Destination $publish -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs') -Destination $publish -Recurse -Force
+& (Join-Path $PSScriptRoot 'package-runtime-notices.ps1') -PublishDirectory $publish
 # The native NuGet package copies both architectures. This app is x64 only.
 $x86=[IO.Path]::GetFullPath((Join-Path $publish 'libvlc\win-x86'))
 if(!$x86.StartsWith($publish+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw 'Invalid native output path'}

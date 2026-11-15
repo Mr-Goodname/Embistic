@@ -55,6 +55,7 @@ jobs:
           Copy-Item -LiteralPath README.md,THIRD_PARTY_NOTICES.md -Destination dist/Embistic-win-x64 -Force
           Copy-Item -LiteralPath licenses -Destination dist/Embistic-win-x64 -Recurse -Force
           Copy-Item -LiteralPath docs -Destination dist/Embistic-win-x64 -Recurse -Force
+          & ./tools/package-runtime-notices.ps1 -PublishDirectory dist/Embistic-win-x64
           $publishRoot=[IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'dist\Embistic-win-x64'))
           $x86=[IO.Path]::GetFullPath((Join-Path $publishRoot 'libvlc\win-x86'))
           if(!$x86.StartsWith($publishRoot+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){
