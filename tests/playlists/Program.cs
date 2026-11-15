@@ -262,13 +262,30 @@ internal static class Program
             var initiallyForeground = GetForegroundWindow() == hwnd;
             var uiDpiContext = GetThreadDpiAwarenessContext();
             GetWindowRect(hwnd, out var uiBounds);
-            Console.WriteLine($"NATIVE QUEUE UI: context={uiDpiContext}, awareness={GetAwarenessFromDpiAwarenessContext(uiDpiContext)}, windowDpi={GetDpiForWindow(hwnd)}, bounds={uiBounds.Left},{uiBounds.Top},{uiBounds.Right},{uiBounds.Bottom}");
+            // Read physical virtual-desktop bounds on the DPI-aware UI thread.
+            var virtualLeft = GetSystemMetrics(76); var virtualTop = GetSystemMetrics(77);
+            var virtualWidth = Math.Max(1, GetSystemMetrics(78)); var virtualHeight = Math.Max(1, GetSystemMetrics(79));
+            Console.WriteLine($"NATIVE QUEUE UI: context={uiDpiContext}, awareness={GetAwarenessFromDpiAwarenessContext(uiDpiContext)}, windowDpi={GetDpiForWindow(hwnd)}, bounds={uiBounds.Left},{uiBounds.Top},{uiBounds.Right},{uiBounds.Bottom}, virtualDesktop={virtualLeft},{virtualTop},{virtualWidth},{virtualHeight}");
             var first = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(0)!;
             var third = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(2)!;
             var handle = Descendants<TextBlock>(first).Single(x => x.Tag as string == "QueueDragHandle");
             var origin = handle.PointToScreen(new Point(handle.ActualWidth * .5, handle.ActualHeight * .5));
             var destination = third.PointToScreen(new Point(80, third.ActualHeight * .5));
             var activation = host.PointToScreen(new Point(8, 8));
+            void SendPointerMove(Point target)
+            {
+                // Absolute SendInput coordinates address pixel centres over the
+                // entire physical virtual desktop, including negative monitor origins.
+                var pixelX = Math.Clamp(Math.Round(target.X) - virtualLeft, 0, virtualWidth - 1);
+                var pixelY = Math.Clamp(Math.Round(target.Y) - virtualTop, 0, virtualHeight - 1);
+                var input = new NativeInput { Mouse = new MouseInput
+                {
+                    X = Math.Clamp((int)Math.Round((pixelX + .5) * 65536d / virtualWidth), 0, 65535),
+                    Y = Math.Clamp((int)Math.Round((pixelY + .5) * 65536d / virtualHeight), 0, 65535),
+                    Flags = 0x0001 | 0x8000 | 0x4000 // MOVE | ABSOLUTE | VIRTUALDESK
+                } };
+                if (SendInput(1, [input], Marshal.SizeOf<NativeInput>()) != 1) throw new InvalidOperationException("Native pointer input was rejected");
+            }
             async Task WaitInput(Func<bool> received, string stage)
             {
                 Console.WriteLine("NATIVE QUEUE WAIT: " + stage);
@@ -289,11 +306,11 @@ internal static class Program
                 GetCursorPos(out var before); int request;
                 lock (gate) { request = ++pointerRequest; requestedPointer = rounded; }
                 var context = GetThreadDpiAwarenessContext();
-                if (!SetCursorPos((int)rounded.X, (int)rounded.Y)) throw new InvalidOperationException("Native cursor movement was rejected");
-                GetCursorPos(out var after); GetPhysicalCursorPos(out var physical);
-                Console.WriteLine($"NATIVE QUEUE MOVE: expected={rounded}, win32={after.X},{after.Y}, physical={physical.X},{physical.Y}, context={context}, awareness={GetAwarenessFromDpiAwarenessContext(context)}");
+                SendPointerMove(rounded);
                 if (before.X != rounded.X || before.Y != rounded.Y)
                     await WaitInput(() => pointerReceipt == request, $"pointer delivery (expected={rounded})");
+                GetCursorPos(out var after); GetPhysicalCursorPos(out var physical);
+                Console.WriteLine($"NATIVE QUEUE MOVE: expected={rounded}, win32={after.X},{after.Y}, physical={physical.X},{physical.Y}, context={context}, awareness={GetAwarenessFromDpiAwarenessContext(context)}");
             }
             async Task MoveDragPath(Point from, Point to, int steps)
             {
@@ -302,8 +319,7 @@ internal static class Program
                 for (var step = 1; step <= steps; step++)
                 {
                     var fraction = step / (double)steps;
-                    if (!SetCursorPos((int)Math.Round(from.X + (to.X - from.X) * fraction), (int)Math.Round(from.Y + (to.Y - from.Y) * fraction)))
-                        throw new InvalidOperationException("Native drag path movement was rejected");
+                    SendPointerMove(new Point(from.X + (to.X - from.X) * fraction, from.Y + (to.Y - from.Y) * fraction));
                     await Task.Delay(16);
                 }
             }
@@ -320,15 +336,13 @@ internal static class Program
                     SendMouse(0x0002); await WaitInput(() => routedHandleDowns >= 1, "handle routed down / actual handle hit");
                     Console.WriteLine($"NATIVE QUEUE DOWN: source={downSource}, tag={downTag}, routedHandleDowns={routedHandleDowns}");
                     var threshold = new Point((int)origin.X + 15, (int)origin.Y + 12);
-                    if (!SetCursorPos((int)threshold.X, (int)threshold.Y)) throw new InvalidOperationException("Native drag-start movement was rejected");
-                    // Source-side OLE callbacks prove DoDragDrop is running without
-                    // waiting for a target notification that itself needs more motion.
-                    await WaitInput(() => sourceQueries > 0 || sourceFeedback > 0, "source OLE QueryContinueDrag / GiveFeedback");
                     var approach = new Point((int)destination.X - 8, (int)destination.Y);
-                    await MoveDragPath(threshold, approach, 6);
-                    await WaitInput(() => dragTarget == 2, "destination enter");
-                    // Crossing into another row can itself raise DragEnter; move
-                    // within that row before requiring the real target DragOver.
+                    // Keep sending real human-style motion; OLE source and target
+                    // notifications can themselves require these subsequent packets.
+                    // Only the completed target DragOver/Drop are completion gates.
+                    Console.WriteLine("NATIVE QUEUE PATH: sending continuous absolute mouse input");
+                    await MoveDragPath(origin, threshold, 2);
+                    await MoveDragPath(threshold, approach, 8);
                     await MoveDragPath(approach, destination, 4);
                     await WaitInput(() => dragOverTarget == 2, "destination DragOver");
                     SendMouse(0x0004); await WaitInput(() => drops == 1, "Drop");
@@ -407,6 +421,7 @@ internal static class Program
     [DllImport("user32.dll")] private static extern int GetAwarenessFromDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out NativeRect rect);
+    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr context);
