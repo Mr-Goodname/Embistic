@@ -45,7 +45,8 @@ internal static class Program
             while (!work.IsCompleted && DateTime.UtcNow < deadline) Pump(15);
             if (!work.IsCompleted) throw new TimeoutException("Playlist fixture did not complete");
             work.GetAwaiter().GetResult();
-            CheckNativeDrag(args.Contains("--stress-native-input"));
+            if (!args.Contains("--non-native")) CheckNativeDrag(args.Contains("--stress-native-input"));
+            else Console.WriteLine("Native mouse check explicitly excluded for this local diagnostic run.");
             var exitWork = CheckExitSaveProcessAsync();
             while (!exitWork.IsCompleted) Pump(15);
             exitWork.GetAwaiter().GetResult();
@@ -148,6 +149,7 @@ internal static class Program
             var down = Descendants<Button>(firstRow).Single(x => x.ToolTip as string == "下移");
             down.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
             Check(moved == 1 && window.Queue[1].Id == "a", "Popup row move controls edit the real queue");
+            CheckDragCandidateLifecycle(queueView);
             var nameInput = Find<TextBox>(queueView, "PlaylistName");
             var nameBefore = window.Current;
             popup.IsOpen = false;
@@ -188,6 +190,29 @@ internal static class Program
             window.Close();
         }
     }
+    private static void CheckDragCandidateLifecycle(QueuePopupView view)
+    {
+        var list = Find<ListBox>(view, "QueueItems");
+        var row = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(0)!;
+        var handle = Descendants<TextBlock>(row).Single(x => x.Tag as string == "QueueDragHandle");
+        void PressHandle()
+        {
+            handle.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = Mouse.PreviewMouseDownEvent });
+            if (Get<int>(view, "_dragIndex") != 0 || !ReferenceEquals(Get<Track?>(view, "_dragTrack"), list.Items[0]))
+                throw new InvalidOperationException("Routed handle press did not arm the real queue drag gesture");
+        }
+        bool Cleared() => Get<int>(view, "_dragIndex") == -1 && Get<Track?>(view, "_dragTrack") is null;
+        PressHandle();
+        handle.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = Mouse.PreviewMouseUpEvent });
+        Check(Cleared(), "Releasing a queue handle cancels the gesture so a later outside press cannot drag the old row");
+        PressHandle();
+        list.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.LostMouseCaptureEvent });
+        Check(Cleared(), "Losing queue mouse capture cancels a pending drag gesture");
+        PressHandle();
+        view.Visibility = Visibility.Collapsed;
+        Check(Cleared(), "Hiding the queue discards its pending drag before the popup can reopen");
+        view.Visibility = Visibility.Visible;
+    }
     private static void CheckNativeDrag(bool stressInput)
     {
         GetCursorPos(out var originalCursor); var foreground = GetForegroundWindow();
@@ -201,41 +226,57 @@ internal static class Program
         var lastPointer = new Point(); var lastSource = "none"; var downSource = "none"; var downTag = "none";
         Point? requestedPointer = null;
         var pointerRequest = 0; var pointerReceipt = 0;
-        var host = new Window { Content = view, SizeToContent = SizeToContent.WidthAndHeight, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize,
+        var surface = new Border { Width = 540, Height = 610, Background = Brushes.DimGray };
+        var popup = new Popup { Child = view, PlacementTarget = surface, Placement = PlacementMode.Relative,
+            HorizontalOffset = 10, VerticalOffset = 30, AllowsTransparency = true, StaysOpen = false, PopupAnimation = PopupAnimation.None };
+        var popupOpened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var popupClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        popup.Opened += (_, _) => popupOpened.TrySetResult();
+        popup.Closed += (_, _) => popupClosed.TrySetResult();
+        var host = new Window { Content = surface, SizeToContent = SizeToContent.WidthAndHeight, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize,
             ShowInTaskbar = false, ShowActivated = false, Topmost = true, Left = SystemParameters.WorkArea.Left + 30, Top = SystemParameters.WorkArea.Top + 30,
             Opacity = string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase) ? 1 : .04 };
+        view.Opacity = host.Opacity;
         try
         {
             var list = Find<ListBox>(view, "QueueItems");
-            host.AddHandler(UIElement.PreviewMouseMoveEvent, new MouseEventHandler((_, e) =>
+            void ObserveInput(UIElement inputRoot)
             {
-                lock (gate)
+                inputRoot.AddHandler(UIElement.PreviewMouseMoveEvent, new MouseEventHandler((sender, e) =>
                 {
-                    moves++; lastPointer = host.PointToScreen(e.GetPosition(host)); lastSource = e.OriginalSource.GetType().Name;
-                    // Preserve the matching routed event as an acknowledgement. A
-                    // later hover/layout event must not erase an already delivered move.
-                    if (requestedPointer is { } expected && (lastPointer - expected).Length <= 1) pointerReceipt = pointerRequest;
-                }
-            }), true);
-            host.AddHandler(UIElement.PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler((_, e) =>
-            { lock (gate) { downs++; lastSource = downSource = e.OriginalSource.GetType().Name; } }), true);
-            host.AddHandler(Mouse.MouseDownEvent, new MouseButtonEventHandler((_, e) =>
-            {
-                if (e.ChangedButton != MouseButton.Left) return;
-                var element = e.OriginalSource as DependencyObject;
-                while (element is not null && element is not FrameworkElement)
-                    element = LogicalTreeHelper.GetParent(element);
-                var hitHandle = element is FrameworkElement { Tag: "QueueDragHandle" };
-                lock (gate) downTag = (element as FrameworkElement)?.Tag?.ToString() ?? "none";
-                // The source control records its drag origin in PreviewMouseDown.
-                // A preview count at the host is too early: moving the OS cursor
-                // there can change GetPosition before the source finishes routing.
-                host.Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+                    if (ReferenceEquals(inputRoot, host) && popup.IsOpen) return;
+                    lock (gate)
+                    {
+                        var visual = (UIElement)sender;
+                        moves++; lastPointer = visual.PointToScreen(e.GetPosition(visual)); lastSource = e.OriginalSource.GetType().Name;
+                        // Preserve the matching routed event as an acknowledgement. A
+                        // later hover/layout event must not erase an already delivered move.
+                        if (requestedPointer is { } expected && (lastPointer - expected).Length <= 1) pointerReceipt = pointerRequest;
+                    }
+                }), true);
+                inputRoot.AddHandler(UIElement.PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler((_, e) =>
+                { if (ReferenceEquals(inputRoot, host) && popup.IsOpen) return; lock (gate) { downs++; lastSource = downSource = e.OriginalSource.GetType().Name; } }), true);
+                inputRoot.AddHandler(Mouse.MouseDownEvent, new MouseButtonEventHandler((_, e) =>
                 {
-                    lock (gate) { routedDowns++; if (hitHandle) routedHandleDowns++; }
-                });
-            }), true);
-            host.AddHandler(UIElement.PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler((_, _) => { lock (gate) ups++; }), true);
+                    if (ReferenceEquals(inputRoot, host) && popup.IsOpen) return;
+                    if (e.ChangedButton != MouseButton.Left) return;
+                    var element = e.OriginalSource as DependencyObject;
+                    while (element is not null && element is not FrameworkElement)
+                        element = LogicalTreeHelper.GetParent(element);
+                    var hitHandle = element is FrameworkElement { Tag: "QueueDragHandle" };
+                    lock (gate) downTag = (element as FrameworkElement)?.Tag?.ToString() ?? "none";
+                    // The source control records its drag origin in PreviewMouseDown.
+                    // A preview count at the host is too early: moving the OS cursor
+                    // there can change GetPosition before the source finishes routing.
+                    host.Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+                    {
+                        lock (gate) { routedDowns++; if (hitHandle) routedHandleDowns++; }
+                    });
+                }), true);
+                inputRoot.AddHandler(UIElement.PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler((_, _) =>
+                { if (ReferenceEquals(inputRoot, host) && popup.IsOpen) return; lock (gate) ups++; }), true);
+            }
+            ObserveInput(host); ObserveInput(view);
             list.AddHandler(DragDrop.QueryContinueDragEvent, new QueryContinueDragEventHandler((_, _) => { lock (gate) sourceQueries++; }), true);
             list.AddHandler(DragDrop.GiveFeedbackEvent, new GiveFeedbackEventHandler((_, _) => { lock (gate) sourceFeedback++; }), true);
             list.AddHandler(DragDrop.DragEnterEvent, new DragEventHandler((_, e) =>
@@ -266,11 +307,6 @@ internal static class Program
             var virtualLeft = GetSystemMetrics(76); var virtualTop = GetSystemMetrics(77);
             var virtualWidth = Math.Max(1, GetSystemMetrics(78)); var virtualHeight = Math.Max(1, GetSystemMetrics(79));
             Console.WriteLine($"NATIVE QUEUE UI: context={uiDpiContext}, awareness={GetAwarenessFromDpiAwarenessContext(uiDpiContext)}, windowDpi={GetDpiForWindow(hwnd)}, bounds={uiBounds.Left},{uiBounds.Top},{uiBounds.Right},{uiBounds.Bottom}, virtualDesktop={virtualLeft},{virtualTop},{virtualWidth},{virtualHeight}");
-            var first = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(0)!;
-            var third = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(2)!;
-            var handle = Descendants<TextBlock>(first).Single(x => x.Tag as string == "QueueDragHandle");
-            var origin = handle.PointToScreen(new Point(handle.ActualWidth * .5, handle.ActualHeight * .5));
-            var destination = third.PointToScreen(new Point(80, third.ActualHeight * .5));
             var activation = host.PointToScreen(new Point(8, 8));
             void SendPointerMove(Point target)
             {
@@ -332,8 +368,33 @@ internal static class Program
                     await MoveAndWait(activation);
                     SendMouse(0x0002); await WaitInput(() => routedDowns >= 1, "activation routed down");
                     SendMouse(0x0004); await WaitInput(() => ups >= 1 && GetForegroundWindow() == hwnd, "activation up / foreground");
+                    // Exercise the same separate popup HWND and mouse-capture rules
+                    // as the player's StaysOpen=False queue, after activating its owner.
+                    await host.Dispatcher.InvokeAsync(() => popup.IsOpen = true);
+                    await popupOpened.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                    var positions = await host.Dispatcher.InvokeAsync(() =>
+                    {
+                        view.UpdateLayout();
+                        var first = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(0)!;
+                        var third = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(2)!;
+                        var handle = Descendants<TextBlock>(first).Single(x => x.Tag as string == "QueueDragHandle");
+                        return (Origin: handle.PointToScreen(new Point(handle.ActualWidth * .5, handle.ActualHeight * .5)),
+                            Destination: third.PointToScreen(new Point(80, third.ActualHeight * .5)),
+                            Header: view.PointToScreen(new Point(8, 8)));
+                    }, DispatcherPriority.Loaded);
+                    var origin = positions.Origin; var destination = positions.Destination;
                     await MoveAndWait(origin);
                     SendMouse(0x0002); await WaitInput(() => routedHandleDowns >= 1, "handle routed down / actual handle hit");
+                    SendMouse(0x0004); await WaitInput(() => ups >= 2, "handle click release");
+                    await MoveAndWait(positions.Header);
+                    SendMouse(0x0002); await WaitInput(() => routedDowns >= 3, "fresh press outside the queue");
+                    await MoveAndWait(destination);
+                    SendMouse(0x0004); await WaitInput(() => ups >= 3, "outside gesture release");
+                    await host.Dispatcher.InvokeAsync(() => Check(moved == 0 && sourceQueries == 0 &&
+                        tracks.Select(x => x.Id).SequenceEqual(Enumerable.Range(0, 5).Select(i => "native-" + i)),
+                        "A released handle click cannot start a later native drag pressed outside the queue"));
+                    await MoveAndWait(origin);
+                    SendMouse(0x0002); await WaitInput(() => routedHandleDowns >= 2, "new handle press for native reorder");
                     Console.WriteLine($"NATIVE QUEUE DOWN: source={downSource}, tag={downTag}, routedHandleDowns={routedHandleDowns}");
                     var threshold = new Point((int)origin.X + 15, (int)origin.Y + 12);
                     var approach = new Point((int)destination.X - 8, (int)destination.Y);
@@ -367,11 +428,15 @@ internal static class Program
             input.GetAwaiter().GetResult();
             Console.WriteLine($"NATIVE QUEUE: initialForeground={initiallyForeground}, busyUiMs={(stressInput ? 250 : 0)}, moves={moves}, downs={downs}, routedHandleDowns={routedHandleDowns}, downSource={downSource}, downTag={downTag}, ups={ups}, sourceQueries={sourceQueries}, sourceFeedback={sourceFeedback}, dragEnters={dragEnters}, dragOvers={dragOvers}, drops={drops}, target={dragTarget}, overTarget={dragOverTarget}");
             Check(moved == 1 && tracks.Select(x => x.Id).SequenceEqual(new[] { "native-1", "native-2", "native-0", "native-3", "native-4" }),
-                "Real Windows mouse press/move/drop on the queue handle reorders the native WPF list");
+                "Real Windows mouse press/move/drop reorders the queue inside its StaysOpen=False popup");
+            Check(popup.IsOpen, "Queue popup remains open through native drag capture and release");
         }
         finally
         {
-            SendMouse(0x0004); Mouse.Capture(null); host.Close(); SetCursorPos(originalCursor.X, originalCursor.Y);
+            SendMouse(0x0004); popup.IsOpen = false;
+            var closeDeadline = Stopwatch.StartNew();
+            while (popupOpened.Task.IsCompleted && !popupClosed.Task.IsCompleted && closeDeadline.ElapsedMilliseconds < 1000) Pump(5);
+            Mouse.Capture(null); host.Close(); SetCursorPos(originalCursor.X, originalCursor.Y);
             if (foreground != IntPtr.Zero) SetForegroundWindow(foreground);
         }
     }

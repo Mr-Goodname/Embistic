@@ -19,8 +19,14 @@ public partial class QueuePopupView : UserControl
     public event Action<string, bool>? CreateRequested;
     public event Action<string>? LoadRequested, DeleteRequested, UpdateRequested;
     public event Action<string, string>? RenameRequested;
-    public QueuePopupView() => InitializeComponent();
-    public void SetQueue(ObservableCollection<Track> queue) => QueueItems.ItemsSource = queue;
+    public QueuePopupView()
+    {
+        InitializeComponent();
+        QueueItems.AddHandler(Mouse.PreviewMouseUpEvent, new MouseButtonEventHandler(Queue_PointerUp), true);
+        QueueItems.AddHandler(Mouse.LostMouseCaptureEvent, new MouseEventHandler(Queue_LostMouseCapture), true);
+        IsVisibleChanged += (_, _) => { if (!IsVisible) ClearDragCandidate(); };
+    }
+    public void SetQueue(ObservableCollection<Track> queue) { ClearDragCandidate(); QueueItems.ItemsSource = queue; }
     public void UpdateSummary(string scope, Track? current, bool playing)
     {
         QueueSummary.Text = $"{QueueItems.Items.Count:N0} 首 · {scope}";
@@ -55,19 +61,29 @@ public partial class QueuePopupView : UserControl
     }
     private void Queue_PointerDown(object sender, MouseButtonEventArgs e)
     {
-        _dragIndex = -1; _dragTrack = null;
+        ClearDragCandidate();
         if (Ancestor<FrameworkElement>(e.OriginalSource as DependencyObject) is not { Tag: "QueueDragHandle" }) return;
         _dragIndex = IndexOfSender(e.OriginalSource);
         if (_dragIndex >= 0) { _dragTrack = QueueItems.Items[_dragIndex] as Track; _dragOrigin = e.GetPosition(QueueItems); }
     }
     private void Queue_PointerMove(object sender, MouseEventArgs e)
     {
-        if (e.LeftButton != MouseButtonState.Pressed || _dragIndex < 0 || _dragTrack is null) return;
+        if (e.LeftButton != MouseButtonState.Pressed) { ClearDragCandidate(); return; }
+        if (_dragIndex < 0 || _dragTrack is null) return;
         var point = e.GetPosition(QueueItems);
         if (Math.Abs(point.X - _dragOrigin.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(point.Y - _dragOrigin.Y) < SystemParameters.MinimumVerticalDragDistance) return;
         var drag = new QueueDrag(_dragIndex, _dragTrack);
-        _dragIndex = -1; _dragTrack = null;
+        ClearDragCandidate();
         DragDrop.DoDragDrop(QueueItems, new DataObject(_dragFormat, drag), DragDropEffects.Move);
+    }
+    private void ClearDragCandidate() { _dragIndex = -1; _dragTrack = null; }
+    private void Queue_PointerUp(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left) ClearDragCandidate();
+    }
+    private void Queue_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (!QueueItems.IsMouseCaptureWithin) ClearDragCandidate();
     }
     private void Queue_DragOver(object sender, DragEventArgs e)
     {
